@@ -18,3 +18,7 @@ int ioctl(int fd, unsigned long request, ...) {
     if (request == 3) { if (arg) *(int *)arg=0; return 0; }
     return (int)syscall(SYS_ioctl, fd, request, arg);
 }
+/* Newer Allwinner binary components import these logging-key symbols rather
+ * than defining them in libcdc_base. Keep them process-local and harmless. */
+char CDX_LOG_LEVEL_NAME[] = "CEDARC_LOG_LEVEL";
+char CDC_LOG_LEVEL_NAME[] = "CEDARC_LOG_LEVEL";
