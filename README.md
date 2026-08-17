@@ -6,8 +6,18 @@ The initial CI job is intentionally a compatibility inventory: it compiles the l
 
 ## Build status
 
-The first CI failure was the 32-bit ARM-only cache assembly. It is replaced temporarily by a documented no-op to expose the next API-compatibility errors. This is **not deployable** until the cache ioctl is converted to DMA-BUF synchronisation.
+The ARM32-only cache assembly has been removed from the arm64 module. Its
+arbitrary-user-address ioctl is rejected on arm64; a production adapter must
+use `DMA_BUF_IOCTL_SYNC` on a contiguous DMA-BUF instead. This prevents a
+silent cache-maintenance no-op.
 
 ## H618 binding adaptation
 
-The port now recognizes Orange Pi OS’s `allwinner,sun50i-h616-video-engine` node and maps its upstream clock names (`ahb`, `mod`, `ram`). This remains **not deployable**: stock Cedrus already owns that node, and cache/DMA synchronisation is deliberately incomplete.
+The port now recognizes Orange Pi OS’s `allwinner,sun50i-h616-video-engine` node and maps its upstream clock names (`ahb`, `mod`, `ram`). This remains **not deployable**: stock Cedrus already owns that node, and a contiguous DMA-BUF allocator and userspace adapter are still required.
+
+## Coexistence target
+
+The end state is stock Cedrus request-API decoding plus a V4L2 encoder on the
+same VE driver. The temporary legacy-driver takeover is only a faster way to
+validate vendor VENC behavior. It cannot coexist with Cedrus because both
+bind `video-codec@1c0e000`.
