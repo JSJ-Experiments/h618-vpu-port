@@ -1,0 +1,34 @@
+name: H618 VPU Port Testbox
+on:
+  workflow_dispatch:
+    inputs:
+      testbox_id:
+        type: string
+        description: Testbox session ID
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: blacksmith-4vcpu-ubuntu-2204
+    timeout-minutes: 60
+    steps:
+      - name: Begin Testbox
+        uses: useblacksmith/begin-testbox@v2
+        with:
+          testbox_id: ${{ inputs.testbox_id }}
+      - uses: actions/checkout@v4
+      - name: Install cross-build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev dwarves gcc-aarch64-linux-gnu git kmod
+      - name: Prepare matching H618 kernel tree
+        run: |
+          git clone --depth=1 --branch orange-pi-6.1-sun50iw9 https://github.com/orangepi-xunlong/linux-orangepi.git kernel
+          cp kernel-target/orangepi-6.1.31-1.config kernel/.config
+          cp kernel-target/orangepi-6.1.31-1.Module.symvers kernel/Module.symvers
+          make -C kernel ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LOCALVERSION=-1 olddefconfig
+          make -C kernel ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LOCALVERSION=-1 modules_prepare
+      - name: Keep Testbox alive for incremental port builds
+        uses: useblacksmith/run-testbox@v2
+        if: always()
