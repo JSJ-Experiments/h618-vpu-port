@@ -1946,7 +1946,9 @@ static int cedardev_mmap(struct file *filp, struct vm_area_struct *vma)
 	}
 
 
-	if (vma->vm_pgoff) {
+	/* Legacy libVE passes address_macc as the mmap file offset. It is a
+	 * register-map selector, not a coherent-buffer handle. */
+	if (vma->vm_pgoff && vma->vm_pgoff != (MACC_REGS_BASE >> PAGE_SHIFT)) {
 		buffer = find_coherent_buffer(info, vma->vm_pgoff);
 		if (!buffer || length > buffer->size)
 			return -EINVAL;
