@@ -7,3 +7,8 @@ legacy VE driver owns the VPU.
 
 The ABI follows CedarX's public `ScMemOpsS` layout. It is a bridge for the
 vendor encoder libraries, not a general-purpose allocator.
+
+`memadapter-abi-probe` is a 32-bit Bionic test program. With the replacement
+library first in `LD_LIBRARY_PATH` and `/dev/cedar_dev` owned by the legacy
+driver, it verifies the loader ABI and opens the VE allocation device. It does
+not start an encode.
