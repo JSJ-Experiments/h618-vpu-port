@@ -51,6 +51,22 @@ struct ScMemOpsS {
     unsigned int (*get_ve_addr_offset)(void);
 };
 
+/* Android12's VENC copies an extended CedarX table that adds a non-cached
+ * allocator immediately after palloc. Keep the public-prefix definition for
+ * callers, but hand its vendor encoder this exact extended layout. */
+struct AndroidScMemOpsS {
+    int (*open)(void); void (*close)(void); int (*total_size)(void);
+    void *(*palloc)(int, void *, void *);
+    void *(*palloc_no_cache)(int, void *, void *);
+    void (*pfree)(void *, void *, void *); void (*flush_cache)(void *, int);
+    void *(*ve_get_phyaddr)(void *); void *(*ve_get_viraddr)(void *);
+    void *(*cpu_get_phyaddr)(void *); void *(*cpu_get_viraddr)(void *);
+    int (*mem_set)(void *, int, size_t); int (*mem_cpy)(void *, void *, size_t);
+    int (*mem_read)(void *, void *, size_t); int (*mem_write)(void *, void *, size_t);
+    int (*setup)(void); int (*shutdown)(void);
+    void *(*palloc_secure)(int, void *, void *); unsigned int (*get_ve_addr_offset)(void);
+};
+
 struct bridge_buffer {
     struct bridge_buffer *next;
     void *virt;
@@ -270,8 +286,8 @@ static int bridge_noop(void) { return 0; }
 static int bridge_total_size(void) { return 128 * 1024 * 1024; }
 static unsigned int bridge_ve_offset(void) { return 0; }
 
-static struct ScMemOpsS g_memops = {
-    bridge_open, bridge_close, bridge_total_size, bridge_palloc, bridge_pfree,
+static struct AndroidScMemOpsS g_memops = {
+    bridge_open, bridge_close, bridge_total_size, bridge_palloc, bridge_palloc, bridge_pfree,
     bridge_flush_cache, bridge_get_phyaddr, bridge_get_viraddr,
     bridge_get_phyaddr, bridge_get_viraddr, bridge_mem_set, bridge_mem_copy,
     bridge_mem_read, bridge_mem_write, bridge_noop, bridge_noop,
@@ -281,8 +297,8 @@ static struct ScMemOpsS g_memops = {
 __attribute__((visibility("default"))) struct ScMemOpsS *MemAdapterGetOpsS(void)
 {
 	BRIDGE_DEBUG("MemAdapter: MemAdapterGetOpsS -> %p\n", &g_memops);
-	return &g_memops;
+	return (struct ScMemOpsS *)&g_memops;
 }
 __attribute__((visibility("default"))) struct ScMemOpsS *SecureMemAdapterGetOpsS(void) { return NULL; }
-__attribute__((visibility("default"))) struct ScMemOpsS *__GetIonMemOpsS(void) { return &g_memops; }
+__attribute__((visibility("default"))) struct ScMemOpsS *__GetIonMemOpsS(void) { return (struct ScMemOpsS *)&g_memops; }
 __attribute__((visibility("default"))) int MemAdapterGetDramFreq(void) { return -1; }
