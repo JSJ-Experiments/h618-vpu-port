@@ -20,6 +20,7 @@ cedrus_driver=$(basename "$(readlink -f "$driver_link")")
 restore() {
   local status=$?
   trap - EXIT INT TERM
+  set +e
   if [[ -e /sys/module/sunxi_ve_legacy ]]; then
     rmmod sunxi_ve_legacy || echo 'warning: could not remove legacy VE module' >&2
   fi
