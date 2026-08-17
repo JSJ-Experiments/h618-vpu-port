@@ -42,3 +42,12 @@ was active: `0xf0 = 0`, `0xe0 = 0x00033010`, and `0xe4 = 0x00012011`.
 `0x12011` is an entry in the Android H.264 binary's capability table. The
 driver now follows Android's `0xf0`, `0xe0`, `0xe4` fallback for
 `IOCTL_GET_IC_VER`.
+
+## Safety status (2026-08-17)
+
+The Android H.264 encoder closure is hardware-validated only at 320×240. Its
+larger initialization paths are **not safe** with the current experimental
+legacy kernel bridge: 720p and 1080p attempts can destabilize the system.
+`h264-one-frame-smoke` therefore rejects sizes above 320×240 unless
+`H618_UNSAFE_EXPERIMENTAL=1` is explicitly set. Do not treat the Android OMX
+XML limits or the H618 datasheet limits as supported by this port yet.

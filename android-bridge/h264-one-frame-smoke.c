@@ -70,6 +70,13 @@ int main(int argc, char **argv)
     if (width <= 0 || height <= 0 || (width & 1) || (height & 1) || frames <= 0 || frames > 1000) {
         fprintf(stderr, "invalid dimensions or frame count\n"); return 64;
     }
+    /* The legacy bridge is only validated at 320x240. Larger VENC init paths
+     * can destabilize this experimental kernel driver, so require an explicit
+     * opt-in while reverse-engineering continues. */
+    if ((width > 320 || height > 240) && !getenv("H618_UNSAFE_EXPERIMENTAL")) {
+        fprintf(stderr, "refusing unvalidated VENC size; set H618_UNSAFE_EXPERIMENTAL=1 to override\n");
+        return 64;
+    }
 
     if (!memlib || !venclib) { fprintf(stderr, "dlopen: %s\n", dlerror()); goto out; }
     get_ops = LOAD(memlib, "MemAdapterGetOpsS", get_ops_fn);
