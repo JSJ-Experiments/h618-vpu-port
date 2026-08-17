@@ -264,10 +264,14 @@ static int bridge_mem_copy(void *dst, void *src, size_t size) { memcpy(dst, src,
 static int bridge_mem_read(void *dst, void *src, size_t size) { memcpy(dst, src, size); return 0; }
 static int bridge_mem_write(void *dst, void *src, size_t size) { memcpy(dst, src, size); return 0; }
 static int bridge_noop(void) { return 0; }
+/* CedarX checks this before asking palloc(). The kernel's CMA availability is
+ * dynamic; advertise the reservation size, while dma_alloc_coherent remains
+ * the authoritative allocation/failure point. */
+static int bridge_total_size(void) { return 128 * 1024 * 1024; }
 static unsigned int bridge_ve_offset(void) { return 0; }
 
 static struct ScMemOpsS g_memops = {
-    bridge_open, bridge_close, bridge_noop, bridge_palloc, bridge_pfree,
+    bridge_open, bridge_close, bridge_total_size, bridge_palloc, bridge_pfree,
     bridge_flush_cache, bridge_get_phyaddr, bridge_get_viraddr,
     bridge_get_phyaddr, bridge_get_viraddr, bridge_mem_set, bridge_mem_copy,
     bridge_mem_read, bridge_mem_write, bridge_noop, bridge_noop,
