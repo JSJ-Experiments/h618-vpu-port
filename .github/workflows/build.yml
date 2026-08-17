@@ -18,12 +18,12 @@ jobs:
           git clone --depth=1 --branch orange-pi-6.1-sun50iw9 https://github.com/orangepi-xunlong/linux-orangepi.git kernel
           cp kernel-target/orangepi-6.1.31-1.config kernel/.config
           cp kernel-target/orangepi-6.1.31-1.Module.symvers kernel/Module.symvers
-          make -C kernel ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-          make -C kernel ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
+          make -C kernel ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LOCALVERSION=-1 olddefconfig
+          make -C kernel ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LOCALVERSION=-1 modules_prepare
       - name: Compile against the running kernel ABI
         run: |
           set -o pipefail
-          make -C kernel M="$GITHUB_WORKSPACE/legacy-driver" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules 2>&1 | tee build.log
+          make -C kernel M="$GITHUB_WORKSPACE/legacy-driver" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LOCALVERSION=-1 modules 2>&1 | tee build.log
           modinfo legacy-driver/sunxi_ve_legacy.ko | tee module-info.log
       - name: Upload port diagnostics
         if: always()
