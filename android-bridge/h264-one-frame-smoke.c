@@ -37,6 +37,7 @@ int main(void)
     struct ScMemOpsS *memops; VideoEncoder *encoder = NULL;
     VencBaseConfig config; VencH264Param h264; VencAllocateBufferParam buffers;
     VencInputBuffer input; VencOutputBuffer output;
+    unsigned int vbv_size = 12 * 1024 * 1024;
     const int width = 320, height = 240;
     int rc = 1;
 
@@ -68,6 +69,9 @@ int main(void)
     h264.nFramerate = 30; h264.nBitrate = 500000; h264.nMaxKeyInterval = 30;
     if (set(encoder, VENC_IndexParamH264Param, &h264)) {
         fprintf(stderr, "VideoEncSetParameter(H264) failed\n"); goto destroy;
+    }
+    if (set(encoder, VENC_IndexParamSetVbvSize, &vbv_size)) {
+        fprintf(stderr, "VideoEncSetParameter(VBV) failed\n"); goto destroy;
     }
     {
         int init_result = init(encoder, &config);
