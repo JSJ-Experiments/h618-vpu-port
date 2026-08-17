@@ -2440,3 +2440,6 @@ MODULE_DESCRIPTION("User mode CEDAR device interface");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_VERSION);
 MODULE_ALIAS("platform:cedarx-sunxi");
+
+/* Required by Linux 6.1 DMA-BUF symbol namespace. */
+MODULE_IMPORT_NS(DMA_BUF);
