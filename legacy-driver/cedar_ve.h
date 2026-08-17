@@ -79,6 +79,10 @@ enum IOCTL_CMD {
 	IOCTL_PROC_INFO_STOP,
 	IOCTL_POWER_SETUP = 0x700,
 	IOCTL_POWER_SHUTDOWN,
+
+	/* H618 arm64 port: per-file coherent-buffer allocator. */
+	IOCTL_ALLOC_COHERENT = 0x710,
+	IOCTL_FREE_COHERENT,
 };
 
 #define VE_LOCK_VDEC        0x01
@@ -104,6 +108,13 @@ struct dma_buf_param {
 struct cache_range {
 	u64	start;
 	u64	end;
+};
+
+/* Fixed-width so the Android arm32 compatibility process can use this ABI. */
+struct cedar_coherent_alloc {
+	u32 size;       /* requested size, in bytes */
+	u32 handle;     /* opaque per-file handle; mmap offset is handle << 12 */
+	u64 dma_addr;   /* DMA address programmed into VE registers */
 };
 
 #endif

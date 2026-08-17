@@ -254,6 +254,16 @@ struct ve_info { /* each object will bind a new file handler */
 
 	struct mutex lock_flag_io;
 	u32 lock_flags; /* if flags is 0, means unlock status */
+	struct list_head coherent_buffers;
+	u32 next_coherent_handle;
+};
+
+struct cedar_coherent_buf {
+	struct list_head list;
+	u32 handle;
+	size_t size;
+	void *cpu_addr;
+	dma_addr_t dma_addr;
 };
 
 struct user_iommu_param {
@@ -303,6 +313,29 @@ static u32 cedar_get_ic_version(void)
 
 static int map_dma_buf_addr(int fd, unsigned int *addr);
 static void unmap_dma_buf_addr(int unmap_all, int fd, unsigned int addr);
+
+static void free_coherent_buffers(struct ve_info *info)
+{
+	struct cedar_coherent_buf *buffer, *next;
+
+	list_for_each_entry_safe(buffer, next, &info->coherent_buffers, list) {
+		list_del(&buffer->list);
+		dma_free_coherent(cedar_devp->plat_dev, buffer->size,
+				  buffer->cpu_addr, buffer->dma_addr);
+		kfree(buffer);
+	}
+}
+
+static struct cedar_coherent_buf *find_coherent_buffer(struct ve_info *info,
+							 u32 handle)
+{
+	struct cedar_coherent_buf *buffer;
+
+	list_for_each_entry(buffer, &info->coherent_buffers, list)
+		if (buffer->handle == handle)
+			return buffer;
+	return NULL;
+}
 
 static irqreturn_t VideoEngineInterupt(int irq, void *dev)
 {
@@ -1712,6 +1745,68 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 #endif
 			break;
 		}
+		case IOCTL_ALLOC_COHERENT:
+		{
+			struct cedar_coherent_alloc request;
+			struct cedar_coherent_buf *buffer;
+			size_t size;
+
+			if (copy_from_user(&request, (void __user *)arg, sizeof(request)))
+				return -EFAULT;
+			if (!request.size || request.size > SZ_64M)
+				return -EINVAL;
+			size = PAGE_ALIGN(request.size);
+			buffer = kzalloc(sizeof(*buffer), GFP_KERNEL);
+			if (!buffer)
+				return -ENOMEM;
+			buffer->cpu_addr = dma_alloc_coherent(cedar_devp->plat_dev, size,
+							      &buffer->dma_addr, GFP_KERNEL);
+			if (!buffer->cpu_addr) {
+				kfree(buffer);
+				return -ENOMEM;
+			}
+			if (upper_32_bits(buffer->dma_addr)) {
+				dma_free_coherent(cedar_devp->plat_dev, size,
+						  buffer->cpu_addr, buffer->dma_addr);
+				kfree(buffer);
+				return -ERANGE;
+			}
+			buffer->handle = info->next_coherent_handle++;
+			if (!buffer->handle) {
+				dma_free_coherent(cedar_devp->plat_dev, size,
+						  buffer->cpu_addr, buffer->dma_addr);
+				kfree(buffer);
+				return -ENOSPC;
+			}
+			buffer->size = size;
+			list_add_tail(&buffer->list, &info->coherent_buffers);
+			request.handle = buffer->handle;
+			request.dma_addr = buffer->dma_addr;
+			if (copy_to_user((void __user *)arg, &request, sizeof(request))) {
+				list_del(&buffer->list);
+				dma_free_coherent(cedar_devp->plat_dev, buffer->size,
+						  buffer->cpu_addr, buffer->dma_addr);
+				kfree(buffer);
+				return -EFAULT;
+			}
+			break;
+		}
+		case IOCTL_FREE_COHERENT:
+		{
+			struct cedar_coherent_alloc request;
+			struct cedar_coherent_buf *buffer;
+
+			if (copy_from_user(&request, (void __user *)arg, sizeof(request)))
+				return -EFAULT;
+			buffer = find_coherent_buffer(info, request.handle);
+			if (!buffer)
+				return -ENOENT;
+			list_del(&buffer->list);
+			dma_free_coherent(cedar_devp->plat_dev, buffer->size,
+					  buffer->cpu_addr, buffer->dma_addr);
+			kfree(buffer);
+			break;
+		}
 		default:
 			VE_LOGW("not support the ioctl cmd = 0x%x", cmd);
 			return -1;
@@ -1748,6 +1843,8 @@ static int cedardev_open(struct inode *inode, struct file *filp)
 
 	mutex_init(&info->lock_flag_io);
 	info->lock_flags = 0;
+	INIT_LIST_HEAD(&info->coherent_buffers);
+	info->next_coherent_handle = 1;
 
 	return 0;
 }
@@ -1787,6 +1884,7 @@ static int cedardev_release(struct inode *inode, struct file *filp)
 
 	mutex_unlock(&info->lock_flag_io);
 	mutex_destroy(&info->lock_flag_io);
+	free_coherent_buffers(info);
 
 	if (down_interruptible(&cedar_devp->sem)) {
 		return -ERESTARTSYS;
@@ -1831,9 +1929,12 @@ static struct vm_operations_struct cedardev_remap_vm_ops = {
 
 static int cedardev_mmap(struct file *filp, struct vm_area_struct *vma)
 {
+	struct ve_info *info = filp->private_data;
+	struct cedar_coherent_buf *buffer;
 	unsigned long temp_pfn;
+	unsigned long length = vma->vm_end - vma->vm_start;
 
-	if (vma->vm_end - vma->vm_start == 0) {
+	if (length == 0) {
 		VE_LOGW("vma->vm_end is equal vma->vm_start : %lx\n",\
 			vma->vm_start);
 		return 0;
@@ -1845,6 +1946,17 @@ static int cedardev_mmap(struct file *filp, struct vm_area_struct *vma)
 	}
 
 
+	if (vma->vm_pgoff) {
+		buffer = find_coherent_buffer(info, vma->vm_pgoff);
+		if (!buffer || length > buffer->size)
+			return -EINVAL;
+		return dma_mmap_coherent(cedar_devp->plat_dev, vma,
+					 buffer->cpu_addr, buffer->dma_addr, buffer->size);
+	}
+
+	/* Register mappings are only needed by trusted CedarX-compatible clients. */
+	if (!capable(CAP_SYS_RAWIO) || length > PAGE_SIZE)
+		return -EPERM;
 	temp_pfn = MACC_REGS_BASE >> 12;
 
 
