@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Temporarily hand H618 VE from Cedrus to the legacy validation driver.
+set -Eeuo pipefail
+
+usage() { echo "usage: sudo $0 /path/to/sunxi_ve_legacy.ko -- command [args...]" >&2; exit 64; }
+[[ $# -ge 3 && $2 == -- ]] || usage
+[[ $EUID -eq 0 ]] || { echo 'must run as root' >&2; exit 77; }
+
+module=$1
+shift 2
+[[ -r $module ]] || { echo "module not readable: $module" >&2; exit 66; }
+device=${CEDAR_PLATFORM_DEVICE:-1c0e000.video-codec}
+device_path=/sys/bus/platform/devices/$device
+[[ -e $device_path ]] || { echo "missing VE platform device: $device_path" >&2; exit 69; }
+driver_link=$device_path/driver
+[[ -L $driver_link ]] || { echo 'VE is not bound to Cedrus; refusing takeover' >&2; exit 70; }
+cedrus_driver=$(basename "$(readlink -f "$driver_link")")
+
+restore() {
+  local status=$?
+  trap - EXIT INT TERM
+  if [[ -e /sys/module/sunxi_ve_legacy ]]; then
+    rmmod sunxi_ve_legacy || echo 'warning: could not remove legacy VE module' >&2
+  fi
+  if [[ ! -L $driver_link ]]; then
+    echo "$device" > "/sys/bus/platform/drivers/$cedrus_driver/bind" || \
+      echo 'warning: could not rebind Cedrus; reboot to restore it' >&2
+  fi
+  exit "$status"
+}
+trap restore EXIT INT TERM
+
+echo "$device" > "/sys/bus/platform/drivers/$cedrus_driver/unbind"
+insmod "$module"
+[[ -c /dev/cedar_dev ]] || { echo 'legacy module did not create /dev/cedar_dev' >&2; exit 71; }
+"$@"
