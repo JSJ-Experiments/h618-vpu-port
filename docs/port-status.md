@@ -22,3 +22,10 @@ hardware core.
 
 The next implementation milestone is a contiguous DMA-BUF allocator plus
 `DMA_BUF_IOCTL_SYNC`, then a minimal 64-bit CedarX-compatible encoder adapter.
+
+## Verified on hardware
+
+The current module was built on Blacksmith and briefly loaded on the target.
+It claimed the H618 VE node, created `/dev/cedar_dev`, and was unloaded in the
+same guarded command; the stock `sunxi_cedrus` module and `/dev/video0` were
+then restored. No module is installed persistently.
