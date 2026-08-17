@@ -1,18 +1,42 @@
 // SPDX-License-Identifier: MIT
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 typedef int (*ve_initialize_fn)(void);
 typedef void (*ve_release_fn)(void);
 typedef void *(*video_enc_create_fn)(int);
 typedef void (*video_enc_destroy_fn)(void *);
 
+struct cedar_env32 { uint32_t phymem_start; int32_t phymem_total_size; uint32_t address_macc; };
+
+static int driver_abi_probe(void)
+{
+    struct cedar_env32 env = {0};
+    volatile uint32_t *regs;
+    int fd = open("/dev/cedar_dev", O_RDWR | O_CLOEXEC);
+    int version;
+
+    if (fd < 0) { perror("open /dev/cedar_dev"); return 1; }
+    if (ioctl(fd, 0x101, &env) < 0) { perror("IOCTL_GET_ENV_INFO"); close(fd); return 1; }
+    version = ioctl(fd, 0x209, 0);
+    regs = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, env.address_macc);
+    if (regs == MAP_FAILED) { perror("VE register mmap"); close(fd); return 1; }
+    printf("driver ABI OK: macc=0x%08x ic=0x%x reg0=0x%08x\n", env.address_macc, version, regs[0]);
+    munmap((void *)regs, 4096); close(fd); return 0;
+}
+
 int main(int argc, char **argv)
 {
 	const char *library = "libVE.so";
 	int initialize_requested = argc == 2 && strcmp(argv[1], "--initialize") == 0;
 	int create_h264_requested = argc == 2 && strcmp(argv[1], "--create-h264") == 0;
+	int driver_abi_requested = argc == 2 && strcmp(argv[1], "--driver-abi") == 0;
 	int ve_abi_probe;
 	void *handle;
 	const char *error;
@@ -23,10 +47,12 @@ int main(int argc, char **argv)
 		library = argv[2];
 	else if (create_h264_requested)
 		library = "libvencoder.so";
-	else if (argc != 1 && !initialize_requested) {
-		fprintf(stderr, "usage: %s [--initialize | --create-h264 | --load LIBRARY]\n", argv[0]);
+	else if (argc != 1 && !initialize_requested && !driver_abi_requested) {
+		fprintf(stderr, "usage: %s [--driver-abi | --initialize | --create-h264 | --load LIBRARY]\n", argv[0]);
 		return 64;
 	}
+	if (driver_abi_requested)
+		return driver_abi_probe();
 	ve_abi_probe = strcmp(library, "libVE.so") == 0;
 	handle = dlopen(library, RTLD_NOW | RTLD_GLOBAL);
 
