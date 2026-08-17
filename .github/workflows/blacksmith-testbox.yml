@@ -29,6 +29,12 @@ jobs:
           cp kernel-target/orangepi-6.1.31-1.Module.symvers kernel/Module.symvers
           make -C kernel ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LOCALVERSION=-1 olddefconfig
           make -C kernel ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LOCALVERSION=-1 modules_prepare
+      - name: Build public Android VENC diagnostics
+        run: |
+          git clone --depth=1 https://github.com/allwinner-zh/media-codec.git cedarx
+          make -C android-bridge \
+            CEDARC_INCLUDE="$GITHUB_WORKSPACE/cedarx/sunxi-cedarx/SOURCE/vencoder/include" \
+            h264-one-frame-smoke libVeRegisterSnapshot.so
       - name: Keep Testbox alive for incremental port builds
         uses: useblacksmith/run-testbox@v2
         if: always()
