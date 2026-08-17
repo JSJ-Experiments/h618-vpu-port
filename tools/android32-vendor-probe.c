@@ -8,16 +8,32 @@ typedef void (*ve_release_fn)(void);
 
 int main(int argc, char **argv)
 {
-	void *handle = dlopen("libVE.so", RTLD_NOW | RTLD_GLOBAL);
+	const char *library = "libVE.so";
+	int initialize_requested = argc == 2 && strcmp(argv[1], "--initialize") == 0;
+	int ve_abi_probe;
+	void *handle;
 	const char *error;
 	ve_initialize_fn initialize;
 	ve_release_fn release;
 
+	if (argc == 3 && strcmp(argv[1], "--load") == 0)
+		library = argv[2];
+	else if (argc != 1 && !initialize_requested) {
+		fprintf(stderr, "usage: %s [--initialize | --load LIBRARY]\n", argv[0]);
+		return 64;
+	}
+	ve_abi_probe = strcmp(library, "libVE.so") == 0;
+	handle = dlopen(library, RTLD_NOW | RTLD_GLOBAL);
+
 	if (!handle) {
-		fprintf(stderr, "dlopen(libVE.so): %s\n", dlerror());
+		fprintf(stderr, "dlopen(%s): %s\n", library, dlerror());
 		return 1;
 	}
-	puts("Android/Bionic loaded libVE.so");
+	printf("Android/Bionic loaded %s\n", library);
+	if (!ve_abi_probe) {
+		dlclose(handle);
+		return 0;
+	}
 
 	/* dlsym's error state is per-call; discard optional-loader diagnostics. */
 	(void)dlerror();
@@ -37,7 +53,7 @@ int main(int argc, char **argv)
 		return 2;
 	}
 
-	if (argc == 2 && strcmp(argv[1], "--initialize") == 0) {
+	if (initialize_requested) {
 		int result = initialize();
 		printf("VeInitialize returned %d\n", result);
 		if (result == 0)
