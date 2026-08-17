@@ -939,7 +939,8 @@ static void unmap_dma_buf_addr(int unmap_all, int fd, unsigned int addr)
     unsigned int tmp_addr;
 	mutex_lock(&cedar_devp->lock_mem);
 	/* The vendor iterator dereferences head->next before testing it. */
-	if (cedar_devp->list.aw_next == &cedar_devp->list) {
+	if (!cedar_devp->list.aw_next || !cedar_devp->list.aw_prev ||
+	    cedar_devp->list.aw_next == &cedar_devp->list) {
 		mutex_unlock(&cedar_devp->lock_mem);
 		return;
 	}
@@ -2315,6 +2316,8 @@ static int cedardev_init(struct platform_device *pdev)
 	mutex_init(&cedar_devp->lock_04_reg);
 	mutex_init(&cedar_devp->lock_mem);
 	mutex_init(&cedar_devp->lock_debug_info);
+	/* Release can run before the first clock-enable path. */
+	AW_MEM_INIT_LIST_HEAD(&cedar_devp->list);
 
 	//3.config some register
 	if (deal_with_resouce(pdev)) {
