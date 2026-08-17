@@ -13,15 +13,18 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install cross-build dependencies
         run: sudo apt-get update && sudo apt-get install -y build-essential bc bison flex libssl-dev libelf-dev dwarves gcc-aarch64-linux-gnu git
-      - name: Fetch Orange Pi 6.1 H618 kernel source
+      - name: Fetch matching Orange Pi 6.1 H618 kernel source
         run: |
           git clone --depth=1 --branch orange-pi-6.1-sun50iw9 https://github.com/orangepi-xunlong/linux-orangepi.git kernel
-          make -C kernel ARCH=arm64 defconfig
+          cp kernel-target/orangepi-6.1.31-1.config kernel/.config
+          cp kernel-target/orangepi-6.1.31-1.Module.symvers kernel/Module.symvers
+          make -C kernel ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
           make -C kernel ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules_prepare
-      - name: Compile legacy Cedar VE module and retain diagnostics
+      - name: Compile against the running kernel ABI
         run: |
           set -o pipefail
           make -C kernel M="$GITHUB_WORKSPACE/legacy-driver" ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules 2>&1 | tee build.log
+          modinfo legacy-driver/sunxi_ve_legacy.ko | tee module-info.log
       - name: Upload port diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -29,6 +32,7 @@ jobs:
           name: h618-ve-port-${{ github.sha }}
           path: |
             build.log
+            module-info.log
             legacy-driver/*.ko
             legacy-driver/*.mod.c
           if-no-files-found: warn
