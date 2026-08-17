@@ -274,6 +274,27 @@ struct dma_buf_info {
 static struct cedar_dev *cedar_devp;
 
 /*
+ * Newer VE revisions leave the historical 0xf0 version register clear.
+ * The Android H618 userspace falls back to 0xe0 and then 0xe4; H618 reports
+ * its VE IP version (0x12011) in the latter.
+ */
+static u32 cedar_get_ic_version(void)
+{
+	u32 value;
+
+	if (!cedar_devp || !cedar_devp->iomap_addrs.regs_ve)
+		return 0;
+
+	value = readl(cedar_devp->iomap_addrs.regs_ve + 0xf0);
+	if (!value)
+		value = readl(cedar_devp->iomap_addrs.regs_ve + 0xe0);
+	if (!value)
+		value = readl(cedar_devp->iomap_addrs.regs_ve + 0xe4);
+
+	return value >> 16;
+}
+
+/*
  * Video engine interrupt service routine
  * To wake up ve wait queue
  */
@@ -1387,9 +1408,7 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 			}
 			break;
 		case IOCTL_GET_IC_VER:
-			{
-				return 0;
-			}
+			return cedar_get_ic_version();
 		case IOCTL_SET_REFCOUNT:
 			cedar_devp->ref_count = (int)arg;
 			break;

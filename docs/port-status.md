@@ -29,3 +29,9 @@ The current module was built on Blacksmith and briefly loaded on the target.
 It claimed the H618 VE node, created `/dev/cedar_dev`, and was unloaded in the
 same guarded command; the stock `sunxi_cedrus` module and `/dev/video0` were
 then restored. No module is installed persistently.
+
+The target's VE IP registers were read only while the guarded legacy takeover
+was active: `0xf0 = 0`, `0xe0 = 0x00033010`, and `0xe4 = 0x00012011`.
+`0x12011` is an entry in the Android H.264 binary's capability table. The
+driver now follows Android's `0xf0`, `0xe0`, `0xe4` fallback for
+`IOCTL_GET_IC_VER`.
