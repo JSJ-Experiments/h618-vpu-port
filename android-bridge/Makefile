@@ -3,13 +3,16 @@ API ?= 21
 CEDARC_INCLUDE ?=
 CC := $(NDK)/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi$(API)-clang
 
-all: libMemAdapter.so libCdcIonShim.so memadapter-abi-probe
+all: libMemAdapter.so libCdcIonShim.so libAndroidLogStderr.so memadapter-abi-probe
 
 libMemAdapter.so: cedar_memadapter_bridge.c
 	$(CC) -fPIC -shared -O2 -Wall -Wextra -Werror -Wl,-soname,libMemAdapter.so -o $@ $<
 
 libCdcIonShim.so: cdc_ion_shim.c
 	$(CC) -fPIC -shared -O2 -Wall -Wextra -Werror -Wl,-soname,libCdcIonShim.so -o $@ $<
+
+libAndroidLogStderr.so: android_log_stderr.c
+	$(CC) -fPIC -shared -O2 -Wall -Wextra -Werror -Wl,-soname,libAndroidLogStderr.so -o $@ $<
 
 memadapter-abi-probe: memadapter-abi-probe.c
 	$(CC) -O2 -Wall -Wextra -Werror -o $@ $< -ldl
@@ -20,4 +23,4 @@ h264-one-frame-smoke: h264-one-frame-smoke.c
 	$(CC) -O2 -Wall -Wextra -Werror -I$(CEDARC_INCLUDE) -o $@ $< -ldl
 
 clean:
-	rm -f libMemAdapter.so libCdcIonShim.so memadapter-abi-probe h264-one-frame-smoke
+	rm -f libMemAdapter.so libCdcIonShim.so libAndroidLogStderr.so memadapter-abi-probe h264-one-frame-smoke
