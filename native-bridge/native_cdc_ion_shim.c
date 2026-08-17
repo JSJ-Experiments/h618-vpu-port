@@ -36,18 +36,10 @@ int CdcGetConfigParamterInt(const char *key, int notfound) {
 #include <stdio.h>
 #include <string.h>
 int printf(const char *format, ...) {
-    static int (*real_vprintf)(const char *, va_list);
-    va_list ap;
-    if (strncmp(format, "%s: %s <%s:%u>:", 16) == 0)
-        return 0;
-    if (!real_vprintf)
-        real_vprintf = dlsym(RTLD_NEXT, "vprintf");
-    if (!real_vprintf)
-        return -1;
-    va_start(ap, format);
-    int rc = real_vprintf(format, ap);
-    va_end(ap);
-    return rc;
+    /* The imported CedarX libraries use printf only for Android diagnostics;
+     * suppress it rather than interpreting their incompatible varargs. */
+    (void)format;
+    return 0;
 }
 /* glibc's fortified logger path bypasses printf, but has the same malformed
  * Android logger record. */
