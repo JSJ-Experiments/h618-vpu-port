@@ -24,11 +24,14 @@ static int driver_abi_probe(void)
 
     if (fd < 0) { perror("open /dev/cedar_dev"); return 1; }
     if (ioctl(fd, 0x101, &env) < 0) { perror("IOCTL_GET_ENV_INFO"); close(fd); return 1; }
+    if (ioctl(fd, 0x206, 0) < 0) { perror("IOCTL_ENGINE_REQ"); close(fd); return 1; }
     version = ioctl(fd, 0x209, 0);
     regs = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, fd, env.address_macc);
     if (regs == MAP_FAILED) { perror("VE register mmap"); close(fd); return 1; }
     printf("driver ABI OK: macc=0x%08x ic=0x%x reg0=0x%08x\n", env.address_macc, version, regs[0]);
-    munmap((void *)regs, 4096); close(fd); return 0;
+    munmap((void *)regs, 4096);
+    (void)ioctl(fd, 0x207, 0);
+    close(fd); return 0;
 }
 
 int main(int argc, char **argv)
