@@ -302,6 +302,10 @@ static int bridge_mem_copy(void *dst, void *src, size_t size) { memcpy(dst, src,
 static int bridge_mem_read(void *dst, void *src, size_t size) { memcpy(dst, src, size); return 0; }
 static int bridge_mem_write(void *dst, void *src, size_t size) { memcpy(dst, src, size); return 0; }
 static int bridge_noop(void) { return 0; }
+static int bridge_debug_info(char *buf, int size) { (void)buf; (void)size; return 0; }
+static int bridge_fd_ptr(int fd, void *ptr) { (void)fd; (void)ptr; return -1; }
+static int bridge_free_fd_ptr(int fd, unsigned long ptr) { (void)fd; (void)ptr; return -1; }
+static int bridge_fd_by_vir(void *ptr) { (void)ptr; return -1; }
 /* CedarX checks this before asking palloc(). The kernel's CMA availability is
  * dynamic; advertise the reservation size, while dma_alloc_coherent remains
  * the authoritative allocation/failure point. */
@@ -320,7 +324,7 @@ static struct AndroidVdecScMemOpsS g_vdec_memops = {
     bridge_pfree, bridge_flush_cache, bridge_get_phyaddr, bridge_get_viraddr,
     bridge_get_phyaddr, bridge_get_viraddr, bridge_mem_set, bridge_mem_copy,
     bridge_mem_read, bridge_mem_write, bridge_noop, bridge_noop, bridge_ve_offset,
-    bridge_noop, bridge_noop, bridge_noop, bridge_noop, bridge_noop,
+    bridge_debug_info, bridge_fd_ptr, bridge_fd_ptr, bridge_free_fd_ptr, bridge_fd_by_vir,
 };
 
 static int caller_is_vdecoder(void)
