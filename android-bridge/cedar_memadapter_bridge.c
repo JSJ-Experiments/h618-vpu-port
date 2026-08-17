@@ -151,6 +151,7 @@ static void *bridge_palloc(int size, void *ve_ops, void *ve_self)
 
     (void)ve_ops;
     (void)ve_self;
+    BRIDGE_DEBUG("MemAdapter: palloc request %d\n", size);
     if (size <= 0)
         return NULL;
     mapped_size = ((size_t)size + CEDAR_PAGE_SIZE - 1) & ~(CEDAR_PAGE_SIZE - 1);
