@@ -296,12 +296,16 @@ static u32 cedar_get_ic_version(void)
 		return 0;
 
 	value = readl(cedar_devp->iomap_addrs.regs_ve + 0xf0);
-	if (!value)
-		value = readl(cedar_devp->iomap_addrs.regs_ve + 0xe0);
-	if (!value)
-		value = readl(cedar_devp->iomap_addrs.regs_ve + 0xe4);
+	if (value)
+		return value >> 16;
 
-	return value >> 16;
+	/* On H618 0xe0 is a non-version feature word (commonly 0x33010),
+	 * whereas 0xe4 carries the full 0x12011 VPU id consumed by Android's
+	 * H.264 capability dispatcher. */
+	value = readl(cedar_devp->iomap_addrs.regs_ve + 0xe4);
+	if (value)
+		return value;
+	return readl(cedar_devp->iomap_addrs.regs_ve + 0xe0) >> 16;
 }
 
 /*
