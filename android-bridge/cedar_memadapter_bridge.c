@@ -64,6 +64,8 @@ static int g_fd = -1;
 static unsigned int g_refcount;
 static struct bridge_buffer *g_buffers;
 
+#define BRIDGE_DEBUG(...) do { if (getenv("CEDAR_BRIDGE_DEBUG")) fprintf(stderr, __VA_ARGS__); } while (0)
+
 static struct bridge_buffer *find_virt(const void *address)
 {
     struct bridge_buffer *buffer;
@@ -97,6 +99,7 @@ static int bridge_open(void)
         g_fd = open(CEDAR_DEVICE, O_RDWR | O_CLOEXEC);
         if (g_fd < 0) {
             g_refcount = 0;
+            BRIDGE_DEBUG("MemAdapter: open %s failed: %s\n", CEDAR_DEVICE, strerror(errno));
             result = -1;
         }
     }
@@ -160,16 +163,19 @@ static void *bridge_palloc(int size, void *ve_ops, void *ve_self)
     /* CedarX calls open() before allocation. Do not create a leaked open
      * reference for every allocation if a caller violates that contract. */
     if (g_fd < 0) {
+        BRIDGE_DEBUG("MemAdapter: palloc(%d) without open\n", size);
         pthread_mutex_unlock(&g_lock);
         return NULL;
     }
     if (ioctl(g_fd, IOCTL_ALLOC_COHERENT, &request) != 0) {
+        BRIDGE_DEBUG("MemAdapter: coherent alloc(%zu) failed: %s\n", mapped_size, strerror(errno));
         pthread_mutex_unlock(&g_lock);
         return NULL;
     }
     virt = mmap(NULL, mapped_size, PROT_READ | PROT_WRITE, MAP_SHARED, g_fd,
                 (off_t)request.handle * CEDAR_PAGE_SIZE);
     if (virt == MAP_FAILED) {
+        BRIDGE_DEBUG("MemAdapter: coherent mmap(%zu) failed: %s\n", mapped_size, strerror(errno));
         (void)ioctl(g_fd, IOCTL_FREE_COHERENT, &request);
         pthread_mutex_unlock(&g_lock);
         return NULL;
@@ -187,6 +193,8 @@ static void *bridge_palloc(int size, void *ve_ops, void *ve_self)
     buffer->dma_addr = request.dma_addr;
     buffer->next = g_buffers;
     g_buffers = buffer;
+    BRIDGE_DEBUG("MemAdapter: coherent alloc %u bytes at dma 0x%llx\n", buffer->size,
+                 (unsigned long long)buffer->dma_addr);
     pthread_mutex_unlock(&g_lock);
     return virt;
 }
