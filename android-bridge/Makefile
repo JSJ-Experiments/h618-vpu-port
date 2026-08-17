@@ -18,7 +18,7 @@ libIoctlTrace.so: ioctl_trace.c
 	$(CC) -fPIC -shared -O2 -Wall -Wextra -Werror -Wl,-soname,libIoctlTrace.so -o $@ $<
 
 libVeRegisterSnapshot.so: ve_register_snapshot.c
-	$(CC) -fPIC -shared -O2 -Wall -Wextra -Werror -Wl,-soname,libVeRegisterSnapshot.so -o $@ $<
+	$(CC) -fPIC -shared -O2 -Wall -Wextra -Werror -Wl,-soname,libVeRegisterSnapshot.so -o $@ $< -ldl
 
 memadapter-abi-probe: memadapter-abi-probe.c
 	$(CC) -O2 -Wall -Wextra -Werror -o $@ $< -ldl

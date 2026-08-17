@@ -63,6 +63,9 @@ explicit Android constants rather than trusting the mismatched public enum.
 `H618_VE_REGISTER_SNAPSHOT=/path/page.bin` is set, it captures the final
 4-KiB VE register page from a successful *existing* vendor run without
 changing the proven vendor-smoke executable or committing private binaries.
+It also captures immediately after legacy `IOCTL_WAIT_VE_EN` (`0x102`), which
+is the useful pre-cleanup encoder-completion point; the close fallback is
+mainly for runs that do not issue that wait ioctl.
 The H.264 diagnostic also preserves the known-good extended `ScMemOpsS`
 callback-slot layout: with the shorter VENC bridge table this deliberately
 lands on `total_size`, not the bridge's real `close`, because closing while
