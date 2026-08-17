@@ -1950,6 +1950,10 @@ static int cedardev_mmap(struct file *filp, struct vm_area_struct *vma)
 		buffer = find_coherent_buffer(info, vma->vm_pgoff);
 		if (!buffer || length > buffer->size)
 			return -EINVAL;
+		/* vm_pgoff is our opaque allocation handle for lookup. The DMA
+		 * helper interprets it as an offset into this one allocation, so
+		 * reset it before handing over the complete buffer mapping. */
+		vma->vm_pgoff = 0;
 		return dma_mmap_coherent(cedar_devp->plat_dev, vma,
 					 buffer->cpu_addr, buffer->dma_addr, buffer->size);
 	}
