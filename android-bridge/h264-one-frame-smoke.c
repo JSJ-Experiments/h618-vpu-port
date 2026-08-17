@@ -6,6 +6,8 @@
  */
 #include <dlfcn.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
 #include <string.h>
 #include "vencoder.h"
 
@@ -44,7 +46,7 @@ typedef int (*uninit_fn)(VideoEncoder *);
 
 #define LOAD(handle, name, type) ((type)dlsym((handle), (name)))
 
-int main(void)
+int main(int argc, char **argv)
 {
     void *memlib = dlopen("libMemAdapter.so", RTLD_NOW | RTLD_GLOBAL);
     void *venclib = dlopen("libvencoder.so", RTLD_NOW | RTLD_GLOBAL);
@@ -55,9 +57,17 @@ int main(void)
     struct ScMemOpsS *memops; VideoEncoder *encoder = NULL;
     VendorBaseConfig config; VendorH264Param h264; VencAllocateBufferParam buffers;
     VencInputBuffer input; VencOutputBuffer output;
-    unsigned int vbv_size = 12 * 1024 * 1024;
-    const int width = 320, height = 240;
+    unsigned int vbv_size;
+    int width = 320, height = 240, frames = 1, frame;
     int rc = 1;
+    if (argc != 1 && argc != 3 && argc != 4) {
+        fprintf(stderr, "usage: %s [width height [frames]]\n", argv[0]); return 64;
+    }
+    if (argc >= 3) { width = atoi(argv[1]); height = atoi(argv[2]); }
+    if (argc == 4) frames = atoi(argv[3]);
+    if (width <= 0 || height <= 0 || (width & 1) || (height & 1) || frames <= 0 || frames > 1000) {
+        fprintf(stderr, "invalid dimensions or frame count\n"); return 64;
+    }
 
     if (!memlib || !venclib) { fprintf(stderr, "dlopen: %s\n", dlerror()); goto out; }
     get_ops = LOAD(memlib, "MemAdapterGetOpsS", get_ops_fn);
@@ -73,6 +83,8 @@ int main(void)
     }
     memops = get_ops();
     if (!memops || memops->open()) { fprintf(stderr, "MemAdapter open failed\n"); goto out; }
+    vbv_size = width * height * 2;
+    if (vbv_size < 12 * 1024 * 1024) vbv_size = 12 * 1024 * 1024;
     memset(&config, 0, sizeof(config));
     config.nInputWidth = config.nDstWidth = config.nStride = width;
     config.nInputHeight = config.nDstHeight = height;
@@ -81,9 +93,9 @@ int main(void)
     if (!encoder) { fprintf(stderr, "VideoEncCreate failed\n"); goto close_mem; }
     memset(&h264, 0, sizeof(h264));
     h264.sProfileLevel.nProfile = VENC_H264ProfileBaseline;
-    h264.sProfileLevel.nLevel = VENC_H264Level3;
+    h264.sProfileLevel.nLevel = width * height > 1920 * 1080 ? VENC_H264Level51 : VENC_H264Level4;
     h264.sQPRange.nMinqp = 20; h264.sQPRange.nMaxqp = 45;
-    h264.nFramerate = 30; h264.nBitrate = 500000; h264.nMaxKeyInterval = 30;
+    h264.nFramerate = 25; h264.nBitrate = width * height; h264.nMaxKeyInterval = 25;
     if (set(encoder, VENC_IndexParamH264Param, &h264)) {
         fprintf(stderr, "VideoEncSetParameter(H264) failed\n"); goto destroy;
     }
@@ -96,14 +108,20 @@ int main(void)
     }
     memset(&buffers, 0, sizeof(buffers)); buffers.nBufferNum = 1; buffers.nSizeY = width * height; buffers.nSizeC = width * height / 2;
     if (alloc(encoder, &buffers)) { fprintf(stderr, "input allocation failed\n"); goto uninit; }
-    memset(&input, 0, sizeof(input));
-    if (get_input(encoder, &input)) { fprintf(stderr, "input dequeue failed\n"); goto release_input; }
-    memset(input.pAddrVirY, 16, buffers.nSizeY); memset(input.pAddrVirC, 128, buffers.nSizeC);
-    if (flush(encoder, &input) || add(encoder, &input) || encode(encoder)) { fprintf(stderr, "frame encode failed\n"); goto release_input; }
-    memset(&output, 0, sizeof(output));
-    if (get_output(encoder, &output) || (!output.nSize0 && !output.nSize1)) { fprintf(stderr, "no H264 bitstream returned\n"); goto release_input; }
-    printf("H264 hardware encode OK: %u + %u bytes%s\n", output.nSize0, output.nSize1, (output.nFlag & VENC_BUFFERFLAG_KEYFRAME) ? " keyframe" : "");
-    free_output(encoder, &output); rc = 0;
+    { struct timespec start, end; unsigned long total = 0; clock_gettime(CLOCK_MONOTONIC, &start);
+    for (frame = 0; frame < frames; frame++) {
+        memset(&input, 0, sizeof(input));
+        if (get_input(encoder, &input)) { fprintf(stderr, "input dequeue failed\n"); goto release_input; }
+        memset(input.pAddrVirY, 16 + (frame & 15), buffers.nSizeY); memset(input.pAddrVirC, 128, buffers.nSizeC);
+        if (flush(encoder, &input) || add(encoder, &input) || encode(encoder)) { fprintf(stderr, "frame encode failed at %d\n", frame); goto release_input; }
+        memset(&output, 0, sizeof(output));
+        if (get_output(encoder, &output) || (!output.nSize0 && !output.nSize1)) { fprintf(stderr, "no H264 bitstream returned at %d\n", frame); goto release_input; }
+        total += output.nSize0 + output.nSize1; free_output(encoder, &output);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    { double seconds = (end.tv_sec-start.tv_sec) + (end.tv_nsec-start.tv_nsec)/1e9;
+      printf("H264 hardware encode OK: %dx%d, %d frame(s), %lu bytes, %.2f fps\n", width,height,frames,total,frames/(seconds > 0 ? seconds : 1e-9)); }
+    rc = 0; }
 release_input: release_input(encoder);
 uninit: uninit(encoder);
 destroy: destroy(encoder);
