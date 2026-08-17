@@ -6,6 +6,7 @@
  * than Android ION.  The library is private deployment input: it is built
  * against the Android NDK but contains no vendor binary code.
  */
+#include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -54,6 +55,20 @@ struct ScMemOpsS {
 /* Android12's VENC copies an extended CedarX table that adds a non-cached
  * allocator immediately after palloc. Keep the public-prefix definition for
  * callers, but hand its vendor encoder this exact extended layout. */
+struct AndroidVdecScMemOpsS {
+    int (*open)(void); int (*open2)(void *, void *); void (*close)(void);
+    int (*total_size)(void); void *(*palloc)(int, void *, void *);
+    void *(*palloc_no_cache)(int, void *, void *); void (*pfree)(void *, void *, void *);
+    void (*flush_cache)(void *, int); void *(*ve_get_phyaddr)(void *);
+    void *(*ve_get_viraddr)(void *); void *(*cpu_get_phyaddr)(void *);
+    void *(*cpu_get_viraddr)(void *); int (*mem_set)(void *, int, size_t);
+    int (*mem_cpy)(void *, void *, size_t); int (*mem_read)(void *, void *, size_t);
+    int (*mem_write)(void *, void *, size_t); int (*setup)(void); int (*shutdown)(void);
+    unsigned int (*get_ve_addr_offset)(void); int (*get_debug_info)(char *, int);
+    int (*get_vir_by_fd)(int, void *); int (*get_phy_by_fd)(int, void *);
+    int (*free_phy_by_fd)(int, unsigned long); int (*get_fd_by_vir)(void *);
+};
+
 struct AndroidScMemOpsS {
     int (*open)(void); void (*close)(void); int (*total_size)(void);
     void *(*palloc)(int, void *, void *);
@@ -138,6 +153,13 @@ static void bridge_free_buffer(struct bridge_buffer *buffer)
     if (g_fd >= 0)
         (void)ioctl(g_fd, IOCTL_FREE_COHERENT, &request);
     free(buffer);
+}
+
+static int bridge_open2(void *ve_ops, void *ve_self)
+{
+    (void)ve_ops;
+    (void)ve_self;
+    return bridge_open();
 }
 
 static void bridge_close(void)
@@ -286,19 +308,35 @@ static int bridge_noop(void) { return 0; }
 static int bridge_total_size(void) { return 128 * 1024 * 1024; }
 static unsigned int bridge_ve_offset(void) { return 0; }
 
-static struct AndroidScMemOpsS g_memops = {
+static struct AndroidScMemOpsS g_venc_memops = {
     bridge_open, bridge_close, bridge_total_size, bridge_palloc, bridge_palloc, bridge_pfree,
     bridge_flush_cache, bridge_get_phyaddr, bridge_get_viraddr,
     bridge_get_phyaddr, bridge_get_viraddr, bridge_mem_set, bridge_mem_copy,
     bridge_mem_read, bridge_mem_write, bridge_noop, bridge_noop,
     bridge_palloc, bridge_ve_offset,
 };
+static struct AndroidVdecScMemOpsS g_vdec_memops = {
+    bridge_open, bridge_open2, bridge_close, bridge_total_size, bridge_palloc, bridge_palloc,
+    bridge_pfree, bridge_flush_cache, bridge_get_phyaddr, bridge_get_viraddr,
+    bridge_get_phyaddr, bridge_get_viraddr, bridge_mem_set, bridge_mem_copy,
+    bridge_mem_read, bridge_mem_write, bridge_noop, bridge_noop, bridge_ve_offset,
+    bridge_noop, bridge_noop, bridge_noop, bridge_noop, bridge_noop,
+};
+
+static int caller_is_vdecoder(void)
+{
+    Dl_info info;
+    return dladdr(__builtin_return_address(0), &info) && info.dli_fname &&
+           strstr(info.dli_fname, "libvdecoder.so") != NULL;
+}
 
 __attribute__((visibility("default"))) struct ScMemOpsS *MemAdapterGetOpsS(void)
 {
-	BRIDGE_DEBUG("MemAdapter: MemAdapterGetOpsS -> %p\n", &g_memops);
-	return (struct ScMemOpsS *)&g_memops;
+    void *ops = caller_is_vdecoder() ? (void *)&g_vdec_memops : (void *)&g_venc_memops;
+    BRIDGE_DEBUG("MemAdapter: MemAdapterGetOpsS -> %p (%s)\n", ops,
+                 ops == (void *)&g_vdec_memops ? "vdec" : "venc");
+    return (struct ScMemOpsS *)ops;
 }
 __attribute__((visibility("default"))) struct ScMemOpsS *SecureMemAdapterGetOpsS(void) { return NULL; }
-__attribute__((visibility("default"))) struct ScMemOpsS *__GetIonMemOpsS(void) { return (struct ScMemOpsS *)&g_memops; }
+__attribute__((visibility("default"))) struct ScMemOpsS *__GetIonMemOpsS(void) { return (struct ScMemOpsS *)&g_venc_memops; }
 __attribute__((visibility("default"))) int MemAdapterGetDramFreq(void) { return -1; }
