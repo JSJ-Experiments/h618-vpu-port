@@ -48,3 +48,20 @@ int printf(const char *format, ...) {
     va_end(ap);
     return rc;
 }
+/* glibc's fortified logger path bypasses printf, but has the same malformed
+ * Android logger record. */
+int __printf_chk(int flag, const char *format, ...) {
+    static int (*real_vfprintf)(FILE *, const char *, va_list);
+    va_list ap;
+    (void)flag;
+    if (strncmp(format, "%s: %s <%s:%u>:", 16) == 0)
+        return 0;
+    if (!real_vfprintf)
+        real_vfprintf = dlsym(RTLD_NEXT, "vfprintf");
+    if (!real_vfprintf)
+        return -1;
+    va_start(ap, format);
+    int rc = real_vfprintf(stdout, format, ap);
+    va_end(ap);
+    return rc;
+}
