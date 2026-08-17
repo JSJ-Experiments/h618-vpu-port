@@ -51,17 +51,10 @@ int printf(const char *format, ...) {
 /* glibc's fortified logger path bypasses printf, but has the same malformed
  * Android logger record. */
 int __printf_chk(int flag, const char *format, ...) {
-    static int (*real_vfprintf)(FILE *, const char *, va_list);
-    va_list ap;
+    /* CedarX's glibc closure uses this only for diagnostic logging. Its
+     * Android logger arguments are ABI-incompatible, so logging must remain
+     * disabled until a native logger adapter is implemented. */
     (void)flag;
-    if (strncmp(format, "%s: %s <%s:%u>:", 16) == 0)
-        return 0;
-    if (!real_vfprintf)
-        real_vfprintf = dlsym(RTLD_NEXT, "vfprintf");
-    if (!real_vfprintf)
-        return -1;
-    va_start(ap, format);
-    int rc = real_vfprintf(stdout, format, ap);
-    va_end(ap);
-    return rc;
+    (void)format;
+    return 0;
 }
