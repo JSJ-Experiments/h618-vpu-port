@@ -6,22 +6,29 @@ unbind of `sunxi_cedrus` proved that the port binds the H618
 `video-codec@1c0e000` node and creates `/dev/cedar_dev`; Cedrus was restored
 after the probe.
 
-This is **not** an encoder yet.  The Android H.264 implementation is a
-32-bit Android/Bionic binary, while the target is a 64-bit Linux userspace.
-The public CedarX tree provides the wrapper ABI but not the proprietary H.264
-hardware core.
+This is not yet a demonstrated encoder. The Android H.264 implementation is
+a 32-bit Android/Bionic binary, while the target is a 64-bit Linux userspace.
+The target kernel's `CONFIG_COMPAT` has been proven to run arm32 code. The
+private Android runtime and VENC library closure load under the Android linker
+in emulation. A public Bionic `libMemAdapter.so` replacement now supplies the
+public CedarX `ScMemOpsS` ABI using a guarded per-file coherent-CMA allocator
+in the legacy driver. Both bridge and its ABI probe build with the Android NDK
+on Blacksmith.
 
 ## Deliberate safety constraints
 
 * The legacy and Cedrus drivers cannot own the VE concurrently.
-* H618’s current kernel has CMA but no exported DMA-HEAP or ION allocator.
+* H618’s current kernel has CMA but no exported DMA-HEAP or ION allocator;
+  the temporary bridge uses explicit coherent-CMA allocations instead.
 * The old arbitrary-address cache-flush ioctl is rejected on arm64.  A
   no-op cache flush could silently yield corrupted video.
 * DMA-BUF import accepts only one DMA segment because the legacy ABI submits
   one address and this kernel has no VE IOMMU mapping.
 
-The next implementation milestone is a contiguous DMA-BUF allocator plus
-`DMA_BUF_IOCTL_SYNC`, then a minimal 64-bit CedarX-compatible encoder adapter.
+Next: on a freshly flashed target, run the coherent-CMA smoke test and Bionic
+memory-ABI probe while the guarded legacy driver owns VE, then exercise one
+H.264 frame through the Android VENC libraries. A real coexistence solution
+still needs a V4L2 encoder path in Cedrus and therefore kernel-driver work.
 
 ## Verified on hardware
 

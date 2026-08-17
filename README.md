@@ -13,7 +13,7 @@ silent cache-maintenance no-op.
 
 ## H618 binding adaptation
 
-The port now recognizes Orange Pi OS’s `allwinner,sun50i-h616-video-engine` node and maps its upstream clock names (`ahb`, `mod`, `ram`). This remains **not deployable**: stock Cedrus already owns that node, and a contiguous DMA-BUF allocator and userspace adapter are still required.
+The port now recognizes Orange Pi OS’s `allwinner,sun50i-h616-video-engine` node and maps its upstream clock names (`ahb`, `mod`, `ram`). The legacy driver also exposes a per-file coherent-CMA allocation ABI, and `android-bridge/` builds a 32-bit Android/Bionic `libMemAdapter.so` replacement for the vendor VENC stack. Neither is installed automatically: stock Cedrus already owns the node.
 
 ## Coexistence target
 
@@ -21,3 +21,15 @@ The end state is stock Cedrus request-API decoding plus a V4L2 encoder on the
 same VE driver. The temporary legacy-driver takeover is only a faster way to
 validate vendor VENC behavior. It cannot coexist with Cedrus because both
 bind `video-codec@1c0e000`.
+
+## Current validation path
+
+No full kernel rebuild is required for the temporary validation path: the
+out-of-tree module is built against the exact target kernel headers and
+`Module.symvers`. After a clean reflash: temporarily unbind Cedrus, load the
+matching module, run `tools/cedar-coherent-smoke`, then run
+`android-bridge/memadapter-abi-probe` with the private Android runtime and
+vendor VENC libraries. Unload the module and rebind Cedrus afterwards.
+
+The Android libraries and extracted runtime are private deployment inputs and
+are never committed to this public repository.
