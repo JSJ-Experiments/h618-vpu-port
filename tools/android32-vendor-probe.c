@@ -19,10 +19,19 @@ int main(int argc, char **argv)
 	}
 	puts("Android/Bionic loaded libVE.so");
 
+	/* dlsym's error state is per-call; discard optional-loader diagnostics. */
+	(void)dlerror();
 	initialize = (ve_initialize_fn)dlsym(handle, "VeInitialize");
+	error = dlerror();
+	if (error || !initialize) {
+		fprintf(stderr, "libVE ABI incomplete: %s\n", error ? error : "missing symbol");
+		dlclose(handle);
+		return 2;
+	}
+	(void)dlerror();
 	release = (ve_release_fn)dlsym(handle, "VeRelease");
 	error = dlerror();
-	if (error || !initialize || !release) {
+	if (error || !release) {
 		fprintf(stderr, "libVE ABI incomplete: %s\n", error ? error : "missing symbol");
 		dlclose(handle);
 		return 2;
