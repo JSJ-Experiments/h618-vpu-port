@@ -7,7 +7,7 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
-__attribute__((visibility("default"))) int ioctl(int fd, unsigned long request, ...)
+__attribute__((visibility("default"))) int ioctl(int fd, int request, ...)
 {
     va_list args;
     uintptr_t argument;
@@ -21,7 +21,7 @@ __attribute__((visibility("default"))) int ioctl(int fd, unsigned long request, 
     saved_errno = errno;
     if (result < 0)
         fprintf(stderr, "ioctl trace: fd=%d cmd=0x%lx arg=0x%lx -> %ld (%d)\n",
-                fd, request, (unsigned long)argument, result, saved_errno);
+                fd, (unsigned long)(unsigned int)request, (unsigned long)argument, result, saved_errno);
     errno = saved_errno;
     return (int)result;
 }
