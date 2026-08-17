@@ -884,6 +884,18 @@ static int map_dma_buf_addr(int fd, unsigned int *addr)
 		goto BUF_DETATCH;
 	}
 
+	/*
+	 * The legacy VENC ABI hands a single address to the firmware.  This
+	 * Orange Pi OS kernel has no IOMMU mapping for the VE, so a scatter-
+	 * gathered DMA-BUF cannot be represented safely here.  Refuse it rather
+	 * than programming only the first segment and corrupting memory.
+	 */
+	if (buf_info->sgt->nents != 1) {
+		VE_LOGE("VE requires a contiguous DMA-BUF (got %u segments)\n",
+			buf_info->sgt->nents);
+		goto BUF_UNMAP;
+	}
+
 	buf_info->addr = sg_dma_address(buf_info->sgt->sgl);
 	buf_info->fd = fd;
 	buf_info->p_id = current->tgid;
@@ -907,6 +919,7 @@ static int map_dma_buf_addr(int fd, unsigned int *addr)
 	*addr = buf_info->addr;
 	return 0;
 
+	BUF_UNMAP:
 	dma_buf_unmap_attachment(buf_info->attachment, buf_info->sgt,
 							DMA_BIDIRECTIONAL);
 BUF_DETATCH:
@@ -951,7 +964,7 @@ static void unmap_dma_buf_addr(int unmap_all, int fd, unsigned int addr)
 			tmp_fd = fd;
 			tmp_addr = addr;
 		}
-		if (buf_info->fd == tmp_fd && buf_info->p_id == current->tgid && buf_info->addr == addr) {
+		if (buf_info->fd == tmp_fd && buf_info->p_id == current->tgid && buf_info->addr == tmp_addr) {
 			#if PRINTK_IOMMU_ADDR
 			VE_LOGI("free: fd:%d, buf_info:%p iommu_addr:%lx, dma_buf:%p, \
 					dma_buf_attach:%p, sg_table:%p nets:%d, pid:%d\n",
@@ -1612,7 +1625,14 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 			//VE_LOGI("ion flush_range start:%lx end:%lx size:%lx\n",
 			//		 data.start, data.end, data.end - data.start);
 #if IS_ENABLED(CONFIG_ARM64)
-			cedar_dma_flush_range((void *)data.start, data.end - data.start);
+			/*
+			 * The vendor ioctl takes an arbitrary user virtual address.  It is
+			 * not a valid arm64 DMA synchronization interface, and the old
+			 * ARM32 assembly implementation cannot be made correct by a no-op.
+			 * New userspace must allocate a contiguous DMA-BUF and synchronize
+			 * it with DMA_BUF_IOCTL_SYNC before submitting its DMA address.
+			 */
+			return -EOPNOTSUPP;
 #else
 			dmac_flush_range((void *)data.start, (void *)data.end);
 #endif
