@@ -6,6 +6,8 @@
 #include <stdint.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#include <stdlib.h>
+#include <stdio.h>
 /* Return MEMORY_NORMAL: all bridge buffers expose contiguous DMA addresses,
  * not IOMMU virtual addresses. The VENC closure only uses this as an address
  * mode selector when its allocator is MemAdapter. */
@@ -36,7 +38,6 @@ int CdcGetConfigParamterInt(const char *key, int notfound) {
  * context pointer that is not valid in a glibc process. Drop only that record
  * shape; forward ordinary printf calls (including the smoke-test result). */
 #include <dlfcn.h>
-#include <stdio.h>
 #include <string.h>
 int printf(const char *format, ...) {
     /* The imported CedarX libraries use printf only for Android diagnostics;
