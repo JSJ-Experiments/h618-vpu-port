@@ -66,7 +66,10 @@ int main(void)
     h264.sProfileLevel.nLevel = VENC_H264Level3;
     h264.sQPRange.nMinqp = 20; h264.sQPRange.nMaxqp = 45;
     h264.nFramerate = 30; h264.nBitrate = 500000; h264.nMaxKeyInterval = 30;
-    if (set(encoder, VENC_IndexParamH264Param, &h264) || init(encoder, &config)) { fprintf(stderr, "H264 setup/init failed\n"); goto destroy; }
+    if (set(encoder, VENC_IndexParamH264Param, &h264)) {
+        fprintf(stderr, "VideoEncSetParameter(H264) failed\n"); goto destroy;
+    }
+    if (init(encoder, &config)) { fprintf(stderr, "VideoEncInit failed\n"); goto destroy; }
     memset(&buffers, 0, sizeof(buffers)); buffers.nBufferNum = 1; buffers.nSizeY = width * height; buffers.nSizeC = width * height / 2;
     if (alloc(encoder, &buffers)) { fprintf(stderr, "input allocation failed\n"); goto uninit; }
     memset(&input, 0, sizeof(input));
