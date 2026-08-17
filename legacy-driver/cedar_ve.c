@@ -2413,8 +2413,10 @@ static int	sunxi_cedar_probe(struct platform_device *pdev)
 		VE_LOGI("device ve1 just use to add iommu master");
 		return 0;
 	}
-	cedardev_init(pdev);
-	return 0;
+	/* Do not claim the VE node when resource setup failed.  The vendor code
+	 * ignored this error, which makes an exploratory bind impossible to undo
+	 * safely after a failed probe. */
+	return cedardev_init(pdev);
 }
 
 static struct of_device_id sunxi_cedar_match[] = {
