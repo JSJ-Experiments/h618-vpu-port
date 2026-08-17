@@ -1,0 +1,21 @@
+From: H618 VPU Port <noreply@example.invalid>
+Subject: [PATCH] arm64: dts: sun50i-h618-orangepi-zero3: enable Mali G31
+
+The target kernel already builds CONFIG_DRM_PANFROST=m and Mesa ships
+panfrost_dri.so, but the board DTB leaves the GPU disabled. Enable the node
+and retain its board-specific dcdc1 supply.
+
+---
+ arch/arm64/boot/dts/allwinner/sun50i-h618-orangepi-zero3.dts | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/arch/arm64/boot/dts/allwinner/sun50i-h618-orangepi-zero3.dts b/arch/arm64/boot/dts/allwinner/sun50i-h618-orangepi-zero3.dts
+index 0000000..0000000 100644
+--- a/arch/arm64/boot/dts/allwinner/sun50i-h618-orangepi-zero3.dts
++++ b/arch/arm64/boot/dts/allwinner/sun50i-h618-orangepi-zero3.dts
+@@ -114,7 +114,7 @@
+ &gpu {
+ 	mali-supply = <&reg_dcdc1>;
+-	status = "disabled";
++	status = "okay";
+ };
