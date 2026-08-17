@@ -8,10 +8,10 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <stdio.h>
-/* Return MEMORY_NORMAL: all bridge buffers expose contiguous DMA addresses,
- * not IOMMU virtual addresses. The VENC closure only uses this as an address
- * mode selector when its allocator is MemAdapter. */
-int CdcIonGetMemType(void) { return 0; }
+/* Match Android CedarX's IOMMU-style compatibility mode. The bridge still
+ * supplies contiguous physical DMA addresses, but the encoder uses this flag
+ * to select its H618 input/output address path. */
+int CdcIonGetMemType(void) { return 1; }
 int CdcIonOpen(void) { return open("/dev/cedar_dev", O_RDWR | O_CLOEXEC); }
 int CdcIonClose(int fd) { return close(fd); }
 int CdcIonFree(int fd, uintptr_t handle) { (void)fd; (void)handle; return 0; }
