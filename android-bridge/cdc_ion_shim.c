@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <string.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -19,6 +20,22 @@ __attribute__((visibility("default"))) int CdcIonOpen(void) { return open("/dev/
 __attribute__((visibility("default"))) int CdcIonClose(int fd) { return close(fd); }
 __attribute__((visibility("default"))) int CdcIonGetMemType(void) { return 1; }
 __attribute__((visibility("default"))) int CdcIonFree(void) { return 0; }
+
+/* CedarX decoder opens /dev/ion directly, unlike VENC's CdcIonOpen path. */
+__attribute__((visibility("default"))) int open(const char *path, int flags, ...)
+{
+    va_list args;
+    mode_t mode = 0;
+
+    if (flags & O_CREAT) {
+        va_start(args, flags);
+        mode = (mode_t)va_arg(args, int);
+        va_end(args);
+    }
+    if (path && strcmp(path, "/dev/ion") == 0)
+        path = "/dev/cedar_dev";
+    return (int)syscall(SYS_openat, AT_FDCWD, path, flags, mode);
+}
 
 /*
  * Old CedarX VENC probes an ION allocator with command 3 (check_h3pro).

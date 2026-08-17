@@ -14,7 +14,7 @@ driver, it verifies the loader ABI and opens the VE allocation device. It does
 not start an encode.
 
 `libCdcIonShim.so` is loaded privately with `LD_PRELOAD` for the vendor VENC
-closure. It replaces the initial ION bookkeeping open with a non-ION handle and
+closure. It replaces direct `/dev/ion` opens and the initial ION bookkeeping open with a non-ION handle and
 answers CedarX's obsolete command-3 `check_h3pro` query as a non-H3 device;
 actual buffers still come from `libMemAdapter.so`'s coherent-CMA bridge.  It
 must be preloaded only for the isolated vendor encoder process.
