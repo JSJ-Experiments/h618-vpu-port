@@ -27,3 +27,23 @@ char CDC_LOG_LEVEL_NAME[] = "CEDARC_LOG_LEVEL";
 int CdcGetConfigParamterInt(const char *section, const char *key, int *value) {
     (void)section; (void)key; if (value) *value = 0; return -1;
 }
+/* Vendor libVE emits Android logger records through printf() with a logger
+ * context pointer that is not valid in a glibc process. Drop only that record
+ * shape; forward ordinary printf calls (including the smoke-test result). */
+#include <dlfcn.h>
+#include <stdio.h>
+#include <string.h>
+int printf(const char *format, ...) {
+    static int (*real_vprintf)(const char *, va_list);
+    va_list ap;
+    if (format && strncmp(format, "%s: %s <%s:%u>:", 16) == 0)
+        return 0;
+    if (!real_vprintf)
+        real_vprintf = dlsym(RTLD_NEXT, "vprintf");
+    if (!real_vprintf)
+        return -1;
+    va_start(ap, format);
+    int rc = real_vprintf(format, ap);
+    va_end(ap);
+    return rc;
+}
