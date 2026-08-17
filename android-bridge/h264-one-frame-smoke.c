@@ -69,7 +69,10 @@ int main(void)
     if (set(encoder, VENC_IndexParamH264Param, &h264)) {
         fprintf(stderr, "VideoEncSetParameter(H264) failed\n"); goto destroy;
     }
-    if (init(encoder, &config)) { fprintf(stderr, "VideoEncInit failed\n"); goto destroy; }
+    {
+        int init_result = init(encoder, &config);
+        if (init_result) { fprintf(stderr, "VideoEncInit failed: %d\n", init_result); goto destroy; }
+    }
     memset(&buffers, 0, sizeof(buffers)); buffers.nBufferNum = 1; buffers.nSizeY = width * height; buffers.nSizeC = width * height / 2;
     if (alloc(encoder, &buffers)) { fprintf(stderr, "input allocation failed\n"); goto uninit; }
     memset(&input, 0, sizeof(input));
