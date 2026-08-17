@@ -7,3 +7,7 @@ The initial CI job is intentionally a compatibility inventory: it compiles the l
 ## Build status
 
 The first CI failure was the 32-bit ARM-only cache assembly. It is replaced temporarily by a documented no-op to expose the next API-compatibility errors. This is **not deployable** until the cache ioctl is converted to DMA-BUF synchronisation.
+
+## H618 binding adaptation
+
+The port now recognizes Orange Pi OS’s `allwinner,sun50i-h616-video-engine` node and maps its upstream clock names (`ahb`, `mod`, `ram`). This remains **not deployable**: stock Cedrus already owns that node, and cache/DMA synchronisation is deliberately incomplete.

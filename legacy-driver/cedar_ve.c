@@ -210,6 +210,8 @@ struct cedar_dev {
 	wait_queue_head_t wq;			 /* wait queue for poll ops			   */
 
 	struct iomap_para iomap_addrs;	 /* io remap addrs					   */
+	/* True when bound to the mainline-style H616/H618 video-engine node. */
+	bool mainline_binding;
 
 	struct timer_list cedar_engine_timer;
 	struct timer_list cedar_engine_timer_rel;
@@ -2039,6 +2041,16 @@ static int deal_with_resouce(struct platform_device *pdev)
 	int ret = 0;
 	struct device_node *node = pdev->dev.of_node;
 
+	/*
+	 * Orange Pi OS 6.1 describes the same H618 VE as
+	 * allwinner,sun50i-h616-video-engine and uses the upstream clock names
+	 * ahb/mod/ram.  Android's Cedar node uses sunxi-cedar-ve and
+	 * bus_ve/ve/mbus_ve.  Keep both bindings so the port remains usable with
+	 * either DT, while avoiding a DT overlay solely to rename clocks.
+	 */
+	cedar_devp->mainline_binding =
+		of_device_is_compatible(node, "allwinner,sun50i-h616-video-engine");
+
 	/*4.register irq function*/
 	cedar_devp->irq = irq_of_parse_and_map(node, 0);
 	VE_LOGI("cedar-ve the get irq is %d\n", cedar_devp->irq);
@@ -2076,19 +2088,22 @@ static int deal_with_resouce(struct platform_device *pdev)
 #endif
 
 	//get clk
-	cedar_devp->ve_clk = devm_clk_get(cedar_devp->plat_dev, "ve");
+	cedar_devp->ve_clk = devm_clk_get(cedar_devp->plat_dev,
+		cedar_devp->mainline_binding ? "mod" : "ve");
 	if (IS_ERR(cedar_devp->ve_clk)) {
 		VE_LOGW("try to get ve clk fail\n");
 		return -1;
 	}
 
-	cedar_devp->bus_clk = devm_clk_get(cedar_devp->plat_dev, "bus_ve");
+	cedar_devp->bus_clk = devm_clk_get(cedar_devp->plat_dev,
+		cedar_devp->mainline_binding ? "ahb" : "bus_ve");
 	if (IS_ERR(cedar_devp->bus_clk)) {
 		VE_LOGW("try to get bus clk fail\n");
 		return -1;
 	}
 
-	cedar_devp->mbus_clk = devm_clk_get(cedar_devp->plat_dev, "mbus_ve");
+	cedar_devp->mbus_clk = devm_clk_get(cedar_devp->plat_dev,
+		cedar_devp->mainline_binding ? "ram" : "mbus_ve");
 	if (IS_ERR(cedar_devp->mbus_clk)) {
 		VE_LOGW("try to get mbus clk fail\n");
 		return -1;
@@ -2113,7 +2128,9 @@ static int deal_with_resouce(struct platform_device *pdev)
 		return -1;
 	}
 
-	set_system_register();
+	/* The upstream binding has no legacy sys-config/CCMU reg ranges. */
+	if (!cedar_devp->mainline_binding)
+		set_system_register();
 
 	return 0;
 }
@@ -2402,6 +2419,7 @@ static int	sunxi_cedar_probe(struct platform_device *pdev)
 
 static struct of_device_id sunxi_cedar_match[] = {
 	{ .compatible = "allwinner,sunxi-cedar-ve",},
+	{ .compatible = "allwinner,sun50i-h616-video-engine",},
 	{}
 };
 MODULE_DEVICE_TABLE(of, sunxi_cedar_match);
