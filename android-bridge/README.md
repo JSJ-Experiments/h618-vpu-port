@@ -12,3 +12,7 @@ vendor encoder libraries, not a general-purpose allocator.
 library first in `LD_LIBRARY_PATH` and `/dev/cedar_dev` owned by the legacy
 driver, it verifies the loader ABI and opens the VE allocation device. It does
 not start an encode.
+
+`libCdcIonShim.so` is loaded privately with `LD_PRELOAD` for the vendor VENC
+closure. It replaces the initial ION bookkeeping open with a non-ION handle;
+actual buffers still come from `libMemAdapter.so`'s coherent-CMA bridge.
