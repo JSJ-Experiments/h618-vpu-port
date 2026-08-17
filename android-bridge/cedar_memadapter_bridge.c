@@ -102,6 +102,8 @@ static int bridge_open(void)
             BRIDGE_DEBUG("MemAdapter: open %s failed: %s\n", CEDAR_DEVICE, strerror(errno));
             result = -1;
         }
+		else
+			BRIDGE_DEBUG("MemAdapter: opened %s (fd=%d)\n", CEDAR_DEVICE, g_fd);
     }
     pthread_mutex_unlock(&g_lock);
     return result;
@@ -272,7 +274,11 @@ static struct ScMemOpsS g_memops = {
     bridge_palloc, bridge_ve_offset,
 };
 
-__attribute__((visibility("default"))) struct ScMemOpsS *MemAdapterGetOpsS(void) { return &g_memops; }
+__attribute__((visibility("default"))) struct ScMemOpsS *MemAdapterGetOpsS(void)
+{
+	BRIDGE_DEBUG("MemAdapter: MemAdapterGetOpsS -> %p\n", &g_memops);
+	return &g_memops;
+}
 __attribute__((visibility("default"))) struct ScMemOpsS *SecureMemAdapterGetOpsS(void) { return NULL; }
 __attribute__((visibility("default"))) struct ScMemOpsS *__GetIonMemOpsS(void) { return &g_memops; }
 __attribute__((visibility("default"))) int MemAdapterGetDramFreq(void) { return -1; }
