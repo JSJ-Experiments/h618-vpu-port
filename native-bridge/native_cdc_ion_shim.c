@@ -37,7 +37,7 @@ int CdcGetConfigParamterInt(const char *section, const char *key, int *value) {
 int printf(const char *format, ...) {
     static int (*real_vprintf)(const char *, va_list);
     va_list ap;
-    if (format && strncmp(format, "%s: %s <%s:%u>:", 16) == 0)
+    if (strncmp(format, "%s: %s <%s:%u>:", 16) == 0)
         return 0;
     if (!real_vprintf)
         real_vprintf = dlsym(RTLD_NEXT, "vprintf");
