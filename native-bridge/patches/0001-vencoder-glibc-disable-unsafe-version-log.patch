@@ -1,0 +1,13 @@
+--- a/vencoder/vencoder.c
++++ b/vencoder/vencoder.c
+@@ -128,7 +128,10 @@ VideoEncoder* VideoEncCreate(VENC_CODEC_TYPE eCodecType)
+ {
+     CdcMallocCheckFlag();
+ 
+-    LogVersionInfo();
++    /* libcdc_base's Android-oriented logging ABI can be supplied by a
++     * different host logger. Version printing is nonessential, so avoid a
++     * variadic call before the VENC runtime is initialized. */
++    /* LogVersionInfo(); */
+ 
+     VencContext* venc_ctx = NULL;
