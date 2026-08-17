@@ -938,6 +938,11 @@ static void unmap_dma_buf_addr(int unmap_all, int fd, unsigned int addr)
 	int tmp_fd;
     unsigned int tmp_addr;
 	mutex_lock(&cedar_devp->lock_mem);
+	/* The vendor iterator dereferences head->next before testing it. */
+	if (cedar_devp->list.aw_next == &cedar_devp->list) {
+		mutex_unlock(&cedar_devp->lock_mem);
+		return;
+	}
 	/*
 	aw_mem_list_for_each_entry(buf_info, &cedar_devp->list, i_list) {
 		#if PRINTK_IOMMU_ADDR
