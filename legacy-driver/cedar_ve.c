@@ -1434,7 +1434,9 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 
 				env_info.phymem_start = 0;
 				env_info.phymem_total_size = 0;
-				env_info.address_macc = 0;
+				/* Android's arm32 libVE uses this physical register selector as
+				 * its mmap offset. Returning zero leaves it with a null VE map. */
+				env_info.address_macc = MACC_REGS_BASE;
 				if (copy_to_user((char *)arg, &env_info,
 					sizeof(struct cedarv_env_infomation_compat)))
 					return -EFAULT;
