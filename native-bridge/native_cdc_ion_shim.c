@@ -25,8 +25,9 @@ char CDX_LOG_LEVEL_NAME[] = "CEDARC_LOG_LEVEL";
 char CDC_LOG_LEVEL_NAME[] = "CEDARC_LOG_LEVEL";
 /* The public Linux base library does not include Android's cedarc.conf parser.
  * Returning zero selects vendor defaults; callers treat this as "not set". */
-int CdcGetConfigParamterInt(const char *section, const char *key, int *value) {
-    (void)section; (void)key; if (value) *value = 0; return -1;
+int CdcGetConfigParamterInt(const char *key, int notfound) {
+    (void)key;
+    return notfound;
 }
 /* Vendor libVE emits Android logger records through printf() with a logger
  * context pointer that is not valid in a glibc process. Drop only that record
