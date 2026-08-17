@@ -19,6 +19,9 @@ int CdcIonFree(int fd, uintptr_t handle) { (void)fd; (void)handle; return 0; }
 int ioctl(int fd, unsigned long request, ...) {
     va_list ap; uintptr_t arg; va_start(ap, request); arg=va_arg(ap, uintptr_t); va_end(ap);
     if (request == 3) { if (arg) *(int *)arg=0; return 0; }
+    /* The H618 legacy module cannot expose its mapped register version via
+     * IOCTL_GET_IC_VER on this mainline binding; it is 0x12011 at VE+0xe4. */
+    if (request == 0x207) return 0x12011;
     if (getenv("CEDAR_IOCTL_DEBUG")) dprintf(2, "cedar ioctl fd=%d req=0x%lx arg=0x%lx\n", fd, request, (unsigned long)arg);
     int rc = (int)syscall(SYS_ioctl, fd, request, arg);
     if (getenv("CEDAR_IOCTL_DEBUG")) dprintf(2, "cedar ioctl rc=%d\n", rc);
