@@ -8,8 +8,17 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
-typedef int (*ve_initialize_fn)(void);
-typedef void (*ve_release_fn)(void);
+struct ve_config {
+    int decoder_flag;
+    int encoder_flag;
+    int format;
+    int width;
+    int enable_afbc_flag;
+    int reset_mode;
+    uint32_t frequency;
+};
+typedef void *(*ve_initialize_fn)(struct ve_config *);
+typedef void (*ve_release_fn)(void *);
 typedef void *(*video_enc_create_fn)(int);
 typedef void (*video_enc_destroy_fn)(void *);
 
@@ -116,13 +125,14 @@ int main(int argc, char **argv)
 	}
 
 	if (initialize_requested) {
-		int result = initialize();
-		printf("VeInitialize returned %d\n", result);
-		if (result == 0)
-			release();
+		struct ve_config config = { .encoder_flag = 1 };
+		void *context = initialize(&config);
+		printf("VeInitialize returned %p\n", context);
+		if (context)
+			release(context);
 		if (dlclose(handle) != 0)
 			return 3;
-		return result == 0 ? 0 : 4;
+		return context ? 0 : 4;
 	}
 
 	puts("libVE ABI probe passed (use --initialize only with the legacy VE driver active)");
