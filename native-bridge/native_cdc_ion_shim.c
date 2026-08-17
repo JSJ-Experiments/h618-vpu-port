@@ -22,3 +22,8 @@ int ioctl(int fd, unsigned long request, ...) {
  * than defining them in libcdc_base. Keep them process-local and harmless. */
 char CDX_LOG_LEVEL_NAME[] = "CEDARC_LOG_LEVEL";
 char CDC_LOG_LEVEL_NAME[] = "CEDARC_LOG_LEVEL";
+/* The public Linux base library does not include Android's cedarc.conf parser.
+ * Returning zero selects vendor defaults; callers treat this as "not set". */
+int CdcGetConfigParamterInt(const char *section, const char *key, int *value) {
+    (void)section; (void)key; if (value) *value = 0; return -1;
+}
