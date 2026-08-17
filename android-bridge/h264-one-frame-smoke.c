@@ -18,6 +18,8 @@ typedef struct ScMemOpsS *(*get_ops_fn)(void);
 typedef struct {
     unsigned int nInputWidth, nInputHeight, nDstWidth, nDstHeight, nStride;
     VENC_PIXEL_FMT eInputFormat;
+    /* Android VENC reads a larger private record; keep its tail zeroed. */
+    unsigned int private_tail[8];
 } VendorBaseConfig;
 /* H618 Android12's H264 parameter record places max-IDR interval before
  * bitrate; the older public header has those two fields reversed. */

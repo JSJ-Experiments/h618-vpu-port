@@ -6,7 +6,7 @@
 #include <string.h>
 #include "vencoder.h"
 typedef struct ScMemOpsS *(*get_ops_fn)(void);
-typedef struct { unsigned int nInputWidth,nInputHeight,nDstWidth,nDstHeight,nStride; VENC_PIXEL_FMT eInputFormat; } VendorBaseConfig;
+typedef struct { unsigned int nInputWidth,nInputHeight,nDstWidth,nDstHeight,nStride; VENC_PIXEL_FMT eInputFormat; unsigned int private_tail[8]; } VendorBaseConfig;
 typedef VideoEncoder *(*create_fn)(VENC_CODEC_TYPE); typedef void (*destroy_fn)(VideoEncoder *);
 typedef int (*init_fn)(VideoEncoder *, VendorBaseConfig *); typedef int (*set_fn)(VideoEncoder *, VENC_INDEXTYPE, void *);
 typedef int (*alloc_fn)(VideoEncoder *, VencAllocateBufferParam *); typedef int (*get_input_fn)(VideoEncoder *, VencInputBuffer *);
