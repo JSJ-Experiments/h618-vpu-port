@@ -10,9 +10,16 @@
 #include "vencoder.h"
 
 typedef struct ScMemOpsS *(*get_ops_fn)(void);
+/* Android12's libvencoder acquires VE/MemAdapter globally in VideoEncCreate;
+ * its base-config ABI is the six-field CedarX layout, not the later Linux
+ * wrapper that prepends bEncH264Nalu and appends adapter pointers. */
+typedef struct {
+    unsigned int nInputWidth, nInputHeight, nDstWidth, nDstHeight, nStride;
+    VENC_PIXEL_FMT eInputFormat;
+} VendorBaseConfig;
 typedef VideoEncoder *(*create_fn)(VENC_CODEC_TYPE);
 typedef void (*destroy_fn)(VideoEncoder *);
-typedef int (*init_fn)(VideoEncoder *, VencBaseConfig *);
+typedef int (*init_fn)(VideoEncoder *, VendorBaseConfig *);
 typedef int (*set_fn)(VideoEncoder *, VENC_INDEXTYPE, void *);
 typedef int (*alloc_fn)(VideoEncoder *, VencAllocateBufferParam *);
 typedef int (*get_input_fn)(VideoEncoder *, VencInputBuffer *);
@@ -35,7 +42,7 @@ int main(void)
     add_fn add; encode_fn encode; get_output_fn get_output; free_output_fn free_output;
     release_input_fn release_input; uninit_fn uninit;
     struct ScMemOpsS *memops; VideoEncoder *encoder = NULL;
-    VencBaseConfig config; VencH264Param h264; VencAllocateBufferParam buffers;
+    VendorBaseConfig config; VencH264Param h264; VencAllocateBufferParam buffers;
     VencInputBuffer input; VencOutputBuffer output;
     unsigned int vbv_size = 12 * 1024 * 1024;
     const int width = 320, height = 240;
@@ -59,7 +66,6 @@ int main(void)
     config.nInputWidth = config.nDstWidth = config.nStride = width;
     config.nInputHeight = config.nDstHeight = height;
     config.eInputFormat = VENC_PIXEL_YUV420SP;
-    config.memops = memops;
     encoder = create(VENC_CODEC_H264);
     if (!encoder) { fprintf(stderr, "VideoEncCreate failed\n"); goto close_mem; }
     memset(&h264, 0, sizeof(h264));
