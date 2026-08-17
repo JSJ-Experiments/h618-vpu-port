@@ -17,6 +17,17 @@ typedef struct {
     unsigned int nInputWidth, nInputHeight, nDstWidth, nDstHeight, nStride;
     VENC_PIXEL_FMT eInputFormat;
 } VendorBaseConfig;
+/* H618 Android12's H264 parameter record places max-IDR interval before
+ * bitrate; the older public header has those two fields reversed. */
+typedef struct {
+    VencH264ProfileLevel sProfileLevel;
+    int bEntropyCodingCABAC;
+    VencQPRange sQPRange;
+    int nFramerate;
+    int nMaxKeyInterval;
+    int nBitrate;
+    VENC_CODING_MODE nCodingMode;
+} VendorH264Param;
 typedef VideoEncoder *(*create_fn)(VENC_CODEC_TYPE);
 typedef void (*destroy_fn)(VideoEncoder *);
 typedef int (*init_fn)(VideoEncoder *, VendorBaseConfig *);
@@ -42,7 +53,7 @@ int main(void)
     add_fn add; encode_fn encode; get_output_fn get_output; free_output_fn free_output;
     release_input_fn release_input; uninit_fn uninit;
     struct ScMemOpsS *memops; VideoEncoder *encoder = NULL;
-    VendorBaseConfig config; VencH264Param h264; VencAllocateBufferParam buffers;
+    VendorBaseConfig config; VendorH264Param h264; VencAllocateBufferParam buffers;
     VencInputBuffer input; VencOutputBuffer output;
     unsigned int vbv_size = 12 * 1024 * 1024;
     const int width = 320, height = 240;
