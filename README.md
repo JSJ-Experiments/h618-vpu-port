@@ -29,7 +29,9 @@ out-of-tree module is built against the exact target kernel headers and
 `Module.symvers`. After a clean reflash: temporarily unbind Cedrus, load the
 matching module, run `tools/cedar-coherent-smoke`, then run
 `android-bridge/memadapter-abi-probe` with the private Android runtime and
-vendor VENC libraries. Unload the module and rebind Cedrus afterwards.
+vendor VENC libraries. `tools/android32-vendor-probe --create-h264` then
+checks that the proprietary VENC dispatcher can create its H.264 object.
+Unload the module and rebind Cedrus afterwards.
 
 The Android libraries and extracted runtime are private deployment inputs and
 are never committed to this public repository.
