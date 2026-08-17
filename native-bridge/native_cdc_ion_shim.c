@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 // SPDX-License-Identifier: MIT
 /* Native CedarX compatibility for a CMA-backed MemAdapter. */
 #include <fcntl.h>
