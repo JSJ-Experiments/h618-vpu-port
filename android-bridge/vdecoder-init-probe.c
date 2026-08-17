@@ -11,8 +11,8 @@ typedef struct {
  int bSecureStreamFlag,bSecureStreamFlagLevel1,bIsFramePackage,h265ReferencePictureNum,bReOpenEngine,bIsFrameCtsTestFlag;
 } VideoStreamInfo;
 typedef struct {
- int bScaleDownEn,bRotationEn,bSecOutputEn,nHorizonScaleDownRatio,nVerticalScaleDownRatio,nSecHorizonScaleDownRatio,nSecVerticalScaleDownRatio,nRotateDegree,bThumbnailMode,eOutputPixelFormat,eSecOutputPixelFormat,bNoBFrames,bDisable3D,bSupportMaf,bDispErrorFrame,nVbvBufferSize,nFrameBufferNum,bSecureosEn,bGpuBufValid,nAlignStride,bIsSoftDecoderFlag,bVirMallocSbm,bSupportPallocBufBeforeDecode,nDeInterlaceHoldingFrameBufferNum,nDisplayHoldingFrameBufferNum,nRotateHoldingFrameBufferNum,nDecodeSmoothFrameBufferNum,bIsTvStream;
- void *memops; int eCtlAfbcMode,eCtlIptvMode; void *veOpsS,*pVeOpsSelf; int bConvertVp910bitTo8bit; unsigned int nVeFreq; int bCalledByOmxFlag,bSetProcInfoEnable,nSetProcInfoFreq,nChannelNum;
+ int bScaleDownEn,bRotationEn,bSecOutputEn,nHorizonScaleDownRatio,nVerticalScaleDownRatio,nSDWidth,nSDHeight,bAnySizeSD,nSecHorizonScaleDownRatio,nSecVerticalScaleDownRatio,nRotateDegree,bThumbnailMode,eOutputPixelFormat,eSecOutputPixelFormat,bNoBFrames,bDisable3D,bSupportMaf,bDispErrorFrame,nVbvBufferSize,nFrameBufferNum,bSecureosEn,bGpuBufValid,nAlignStride,bIsSoftDecoderFlag,bVirMallocSbm,bSupportPallocBufBeforeDecode,nDeInterlaceHoldingFrameBufferNum,nDisplayHoldingFrameBufferNum,nRotateHoldingFrameBufferNum,nDecodeSmoothFrameBufferNum,bIsTvStream,bAdapteDropFrame;
+ void *memops; int eCtlAfbcMode,eCtlIptvMode; void *veOpsS,*pVeOpsSelf; int bConvertVp910bitTo8bit; unsigned int nVeFreq; int bCalledByOmxFlag,bSetProcInfoEnable,nSetProcInfoFreq,nChannelNum,nSupportMaxWidth,nSupportMaxHeight,commonConfigFlag,bATMFlag;
 } VConfig;
 typedef VideoDecoder *(*create_fn)(void);
 typedef void (*destroy_fn)(VideoDecoder *);
