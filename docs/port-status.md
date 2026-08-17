@@ -51,3 +51,19 @@ legacy kernel bridge: 720p and 1080p attempts can destabilize the system.
 `h264-one-frame-smoke` therefore rejects sizes above 320×240 unless
 `H618_UNSAFE_EXPERIMENTAL=1` is explicitly set. Do not treat the Android OMX
 XML limits or the H618 datasheet limits as supported by this port yet.
+
+## Android VENC ABI notes
+
+The public CedarX header from `allwinner-zh/media-codec` does **not** match
+the Android 12 `libvencoder.so` control-index ABI.  Disassembly of the
+known-good Android smoke executable establishes `0x100` for its H.264
+parameter record and `15` for its VBV-size record; the smoke tool carries
+explicit Android constants rather than trusting the mismatched public enum.
+`libVeRegisterSnapshot.so` is an optional Bionic close interposer. When
+`H618_VE_REGISTER_SNAPSHOT=/path/page.bin` is set, it captures the final
+4-KiB VE register page from a successful *existing* vendor run without
+changing the proven vendor-smoke executable or committing private binaries.
+The H.264 diagnostic also preserves the known-good extended `ScMemOpsS`
+callback-slot layout: with the shorter VENC bridge table this deliberately
+lands on `total_size`, not the bridge's real `close`, because closing while
+the vendor still owns allocations causes a linker crash.

@@ -11,6 +11,25 @@
 #include <string.h>
 #include "vencoder.h"
 
+/* Android 12 CedarX moved its codec-specific controls out of the old public
+ * enum. These values were recovered from the known-good Android smoke binary
+ * (its ARM call sites pass 0x100 for H.264 parameters and 15 for VBV size).
+ * The older GPL header labels different numeric values with these names. */
+#define ANDROID_VENC_INDEX_VBV_SIZE 15
+#define ANDROID_VENC_INDEX_H264_PARAM 0x100
+
+/* The known-good Android smoke was built against the extended CedarX table:
+ * open, open2, close.  The VENC bridge itself exposes the shorter layout
+ * open, close, total_size; preserving the third-slot call therefore invokes
+ * its harmless total_size callback, exactly as the validated binary does.
+ * Calling the bridge's real close while libvencoder still owns its allocations
+ * tears them down too early and crashes the Android linker. */
+struct ScMemOpsS {
+    int (*open)(void);
+    int (*open2_compat)(void);
+    void (*close)(void);
+};
+
 typedef struct ScMemOpsS *(*get_ops_fn)(void);
 /* Android12's libvencoder acquires VE/MemAdapter globally in VideoEncCreate;
  * its base-config ABI is the six-field CedarX layout, not the later Linux
@@ -105,10 +124,10 @@ int main(int argc, char **argv)
     h264.sProfileLevel.nLevel = width * height > 1920 * 1080 ? VENC_H264Level51 : VENC_H264Level4;
     h264.sQPRange.nMinqp = 20; h264.sQPRange.nMaxqp = 45;
     h264.nFramerate = 25; h264.nBitrate = width * height; h264.nMaxKeyInterval = 25;
-    if (set(encoder, VENC_IndexParamH264Param, &h264)) {
+    if (set(encoder, (VENC_INDEXTYPE)ANDROID_VENC_INDEX_H264_PARAM, &h264)) {
         fprintf(stderr, "VideoEncSetParameter(H264) failed\n"); goto destroy;
     }
-    if (set(encoder, VENC_IndexParamSetVbvSize, &vbv_size)) {
+    if (set(encoder, (VENC_INDEXTYPE)ANDROID_VENC_INDEX_VBV_SIZE, &vbv_size)) {
         fprintf(stderr, "VideoEncSetParameter(VBV) failed\n"); goto destroy;
     }
     {
