@@ -280,7 +280,6 @@ static struct cedar_dev *cedar_devp;
 
 
 
-extern void cedar_dma_flush_range(const void *, size_t);
 static int map_dma_buf_addr(int fd, unsigned int *addr);
 static void unmap_dma_buf_addr(int unmap_all, int fd, unsigned int addr);
 
