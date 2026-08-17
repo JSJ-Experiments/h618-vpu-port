@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 typedef void VideoDecoder;
 typedef struct {
@@ -38,6 +39,6 @@ int main(int argc, char **argv) {
  d=create(); if(!d){fprintf(stderr,"create failed\n");return 3;} rc=init(d,&s,&c); if(rc){fprintf(stderr,"InitializeVideoDecoder rc=%d\n",rc);destroy(d);return 4;}
  a=b=NULL; as=bs=0; rc=request_stream(d,(int)n,&a,&as,&b,&bs,0); if(rc || as+bs<n){fprintf(stderr,"RequestVideoStreamBuffer rc=%d sizes=%d+%d\n",rc,as,bs);destroy(d);return 5;} if(as>=n) memcpy(a,src,(size_t)n); else {memcpy(a,src,(size_t)as);memcpy(b,src+as,(size_t)(n-as));}
  { struct { char *pData; int nLength; long long nPts; long long nPcr; int bIsFirstPart,bIsLastPart,nID,nStreamIndex,bValid; unsigned int bVideoInfoFlag; void *pVideoInfo; } data; memset(&data,0,sizeof(data)); data.pData=a; data.nLength=(int)n; data.nPts=0; data.nPcr=-1; data.bIsFirstPart=1; data.bIsLastPart=1; data.bValid=1; if(submit_stream(d,&data,0)){fprintf(stderr,"SubmitVideoStreamData failed\n");destroy(d);return 6;} }
- for(i=0;i<100;i++){ void *pic; rc=decode(d,i>50,0,0,0); pic=request_picture(d,0); if(pic){return_picture(d,pic); printf("Android CedarX hardware decode OK (codec=0x%x result=%d)\n", codec, rc);destroy(d);free(src);return 0;} }
+ for(i=0;i<300;i++){ void *pic; rc=decode(d,i>20,0,0,0); pic=request_picture(d,0); if(pic){return_picture(d,pic); printf("Android CedarX hardware decode OK (codec=0x%x result=%d)\n", codec, rc);destroy(d);free(src);return 0;} usleep(10000); }
  fprintf(stderr,"no decoded picture\n");destroy(d);free(src);return 7;
 }
