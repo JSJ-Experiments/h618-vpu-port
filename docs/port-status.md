@@ -1,72 +1,41 @@
 # H618 port status
 
-The target is Orange Pi OS Arch arm64, kernel `6.1.31-1`.  The module builds
-against its exact configuration and `Module.symvers` in CI.  A temporary
-unbind of `sunxi_cedrus` proved that the port binds the H618
-`video-codec@1c0e000` node and creates `/dev/cedar_dev`; Cedrus was restored
-after the probe.
+Target: Orange Pi Zero 3, Orange Pi OS Arch arm64, kernel `6.1.31-1`.
 
-This is not yet a demonstrated encoder. The Android H.264 implementation is
-a 32-bit Android/Bionic binary, while the target is a 64-bit Linux userspace.
-The target kernel's `CONFIG_COMPAT` has been proven to run arm32 code. The
-private Android runtime and VENC library closure load under the Android linker
-in emulation. A public Bionic `libMemAdapter.so` replacement now supplies the
-public CedarX `ScMemOpsS` ABI using a guarded per-file coherent-CMA allocator
-in the legacy driver. Both bridge and its ABI probe build with the Android NDK
-on Blacksmith.
+## Native V4L2 path
 
-## Deliberate safety constraints
+`cedrus-v4l2/` combines the stock stateless Cedrus decoders with the Bootlin
+H.264 encoder prototype and an H618-specific port. Reverse engineering of the
+Orange Pi Android 12 vendor encoder established the H618 top-mode, ISP input
+address/stride, width/height packing, output address shift, and AVC control
+register ABI. No proprietary source or binary is committed.
 
-* The legacy and Cedrus drivers cannot own the VE concurrently.
-* H618’s current kernel has CMA but no exported DMA-HEAP or ION allocator;
-  the temporary bridge uses explicit coherent-CMA allocations instead.
-* The old arbitrary-address cache-flush ioctl is rejected on arm64.  A
-  no-op cache flush could silently yield corrupted video.
-* DMA-BUF import accepts only one DMA segment because the legacy ABI submits
-  one address and this kernel has no VE IOMMU mapping.
+Hardware validation completed for H.264 encode at 320x240, 640x480, 1280x720,
+1920x1080 and 3840x2160. Generated Annex-B streams decode without FFmpeg
+errors; one-frame PSNR results are 52--58 dB. A 25-frame 4K stream also decodes
+cleanly. At the vendor-tested 696 MHz VE clock, the same-buffer benchmark
+encodes 25 4K frames in 0.623 seconds (40.10 fps), exceeding the advertised
+4K25 capability. A slower v4l2-ctl result was traced to refilling 311 MB of raw
+input from userspace on the 1 GB board.
 
-Next: on a freshly flashed target, run the coherent-CMA smoke test and Bionic
-memory-ABI probe while the guarded legacy driver owns VE, then exercise one
-H.264 frame through the Android VENC libraries. A real coexistence solution
-still needs a V4L2 encoder path in Cedrus and therefore kernel-driver work.
+The module is currently validated as a guarded replacement: remove distro
+`sunxi_cedrus`, load its V4L2/VB2 dependencies and the experimental module,
+run the test, then unload it and restore distro `sunxi_cedrus`.
 
-## Verified on hardware
+## Android reference path
 
-The current module was built on Blacksmith and briefly loaded on the target.
-It claimed the H618 VE node, created `/dev/cedar_dev`, and was unloaded in the
-same guarded command; the stock `sunxi_cedrus` module and `/dev/video0` were
-then restored. No module is installed persistently.
+The legacy character driver and 32-bit Bionic bridge remain a reverse-
+engineering oracle only. The corrected private ABI includes the leading
+`bEncH264Nalu` word, Android-specific parameter indexes, the Android 12
+MemAdapter callback order, and explicit input-buffer recycling. The vendor
+stack successfully encodes 25 frames at 1920x1080 and 3840x2160, and its SPS,
+PPS, and slice form a valid Annex-B stream. The legacy and V4L2 drivers cannot
+own the VE concurrently.
 
-The target's VE IP registers were read only while the guarded legacy takeover
-was active: `0xf0 = 0`, `0xe0 = 0x00033010`, and `0xe4 = 0x00012011`.
-`0x12011` is an entry in the Android H.264 binary's capability table. The
-driver now follows Android's `0xf0`, `0xe0`, `0xe4` fallback for
-`IOCTL_GET_IC_VER`.
+## Remaining scope
 
-## Safety status (2026-08-17)
-
-The Android H.264 encoder closure is hardware-validated only at 320×240. Its
-larger initialization paths are **not safe** with the current experimental
-legacy kernel bridge: 720p and 1080p attempts can destabilize the system.
-`h264-one-frame-smoke` therefore rejects sizes above 320×240 unless
-`H618_UNSAFE_EXPERIMENTAL=1` is explicitly set. Do not treat the Android OMX
-XML limits or the H618 datasheet limits as supported by this port yet.
-
-## Android VENC ABI notes
-
-The public CedarX header from `allwinner-zh/media-codec` does **not** match
-the Android 12 `libvencoder.so` control-index ABI.  Disassembly of the
-known-good Android smoke executable establishes `0x100` for its H.264
-parameter record and `15` for its VBV-size record; the smoke tool carries
-explicit Android constants rather than trusting the mismatched public enum.
-`libVeRegisterSnapshot.so` is an optional Bionic close interposer. When
-`H618_VE_REGISTER_SNAPSHOT=/path/page.bin` is set, it captures the final
-4-KiB VE register page from a successful *existing* vendor run without
-changing the proven vendor-smoke executable or committing private binaries.
-It also captures immediately after legacy `IOCTL_WAIT_VE_EN` (`0x102`), which
-is the useful pre-cleanup encoder-completion point; the close fallback is
-mainly for runs that do not issue that wait ioctl.
-The H.264 diagnostic also preserves the known-good extended `ScMemOpsS`
-callback-slot layout: with the shorter VENC bridge table this deliberately
-lands on `total_size`, not the bridge's real `close`, because closing while
-the vendor still owns allocations causes a linker crash.
+* Validate all stock H.264/H.265/VP8/MPEG-2 stateless decode paths on H618.
+* VP9 and AVS2 are not implemented by this Cedrus generation and require new
+  codec engine support rather than format advertisement.
+* Add the H618 JPEG encoder path.
+* Validate Panfrost desktop rendering with the enabled GPU DT node.

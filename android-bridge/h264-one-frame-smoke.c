@@ -17,24 +17,15 @@
  * The older GPL header labels different numeric values with these names. */
 #define ANDROID_VENC_INDEX_VBV_SIZE 15
 #define ANDROID_VENC_INDEX_H264_PARAM 0x100
-
-/* The known-good Android smoke was built against the extended CedarX table:
- * open, open2, close.  The VENC bridge itself exposes the shorter layout
- * open, close, total_size; preserving the third-slot call therefore invokes
- * its harmless total_size callback, exactly as the validated binary does.
- * Calling the bridge's real close while libvencoder still owns its allocations
- * tears them down too early and crashes the Android linker. */
-struct ScMemOpsS {
-    int (*open)(void);
-    int (*open2_compat)(void);
-    void (*close)(void);
-};
+#define ANDROID_VENC_INDEX_H264_SPS_PPS 0x101
 
 typedef struct ScMemOpsS *(*get_ops_fn)(void);
-/* Android12's libvencoder acquires VE/MemAdapter globally in VideoEncCreate;
- * its base-config ABI is the six-field CedarX layout, not the later Linux
- * wrapper that prepends bEncH264Nalu and appends adapter pointers. */
+/* Android12's libvencoder acquires VE/MemAdapter globally in VideoEncCreate.
+ * Its VencBaseConfig ABI includes the leading bEncH264Nalu word used by the
+ * newer CedarX headers.  Omitting it shifts every dimension by one word (and
+ * was why a requested 320x240 stream was reported as 240x320). */
 typedef struct {
+    unsigned int bEncH264Nalu;
     unsigned int nInputWidth, nInputHeight, nDstWidth, nDstHeight, nStride;
     VENC_PIXEL_FMT eInputFormat;
     /* Android VENC reads a larger private record; keep its tail zeroed. */
@@ -55,11 +46,14 @@ typedef VideoEncoder *(*create_fn)(VENC_CODEC_TYPE);
 typedef void (*destroy_fn)(VideoEncoder *);
 typedef int (*init_fn)(VideoEncoder *, VendorBaseConfig *);
 typedef int (*set_fn)(VideoEncoder *, VENC_INDEXTYPE, void *);
+typedef int (*get_fn)(VideoEncoder *, VENC_INDEXTYPE, void *);
 typedef int (*alloc_fn)(VideoEncoder *, VencAllocateBufferParam *);
 typedef int (*get_input_fn)(VideoEncoder *, VencInputBuffer *);
+typedef int (*return_input_fn)(VideoEncoder *, VencInputBuffer *);
 typedef int (*flush_fn)(VideoEncoder *, VencInputBuffer *);
 typedef int (*add_fn)(VideoEncoder *, VencInputBuffer *);
 typedef int (*encode_fn)(VideoEncoder *);
+typedef int (*used_input_fn)(VideoEncoder *, VencInputBuffer *);
 typedef int (*get_output_fn)(VideoEncoder *, VencOutputBuffer *);
 typedef int (*free_output_fn)(VideoEncoder *, VencOutputBuffer *);
 typedef int (*release_input_fn)(VideoEncoder *);
@@ -72,12 +66,13 @@ int main(int argc, char **argv)
     void *memlib = dlopen("libMemAdapter.so", RTLD_NOW | RTLD_GLOBAL);
     void *venclib = dlopen("libvencoder.so", RTLD_NOW | RTLD_GLOBAL);
     get_ops_fn get_ops; create_fn create; destroy_fn destroy; init_fn init;
-    set_fn set; alloc_fn alloc; get_input_fn get_input; flush_fn flush;
-    add_fn add; encode_fn encode; get_output_fn get_output; free_output_fn free_output;
+    set_fn set; get_fn get; alloc_fn alloc; get_input_fn get_input; return_input_fn return_input;
+    flush_fn flush; add_fn add; encode_fn encode; used_input_fn used_input;
+    get_output_fn get_output; free_output_fn free_output;
     release_input_fn release_input; uninit_fn uninit;
     struct ScMemOpsS *memops; VideoEncoder *encoder = NULL;
     VendorBaseConfig config; VendorH264Param h264; VencAllocateBufferParam buffers;
-    VencInputBuffer input; VencOutputBuffer output;
+    VencInputBuffer input; VencOutputBuffer output; VencHeaderData header_data;
     unsigned int vbv_size;
     int width = 320, height = 240, frames = 1, frame;
     int rc = 1;
@@ -101,12 +96,15 @@ int main(int argc, char **argv)
     get_ops = LOAD(memlib, "MemAdapterGetOpsS", get_ops_fn);
     create = LOAD(venclib, "VideoEncCreate", create_fn); destroy = LOAD(venclib, "VideoEncDestroy", destroy_fn);
     init = LOAD(venclib, "VideoEncInit", init_fn); set = LOAD(venclib, "VideoEncSetParameter", set_fn);
+    get = LOAD(venclib, "VideoEncGetParameter", get_fn);
     alloc = LOAD(venclib, "AllocInputBuffer", alloc_fn); get_input = LOAD(venclib, "GetOneAllocInputBuffer", get_input_fn);
+    return_input = LOAD(venclib, "ReturnOneAllocInputBuffer", return_input_fn);
     flush = LOAD(venclib, "FlushCacheAllocInputBuffer", flush_fn); add = LOAD(venclib, "AddOneInputBuffer", add_fn);
     encode = LOAD(venclib, "VideoEncodeOneFrame", encode_fn); get_output = LOAD(venclib, "GetOneBitstreamFrame", get_output_fn);
+    used_input = LOAD(venclib, "AlreadyUsedInputBuffer", used_input_fn);
     free_output = LOAD(venclib, "FreeOneBitStreamFrame", free_output_fn); release_input = LOAD(venclib, "ReleaseAllocInputBuffer", release_input_fn);
     uninit = LOAD(venclib, "VideoEncUnInit", uninit_fn);
-    if (!get_ops || !create || !destroy || !init || !set || !alloc || !get_input || !flush || !add || !encode || !get_output || !free_output || !release_input || !uninit) {
+    if (!get_ops || !create || !destroy || !init || !set || !get || !alloc || !get_input || !return_input || !flush || !add || !encode || !used_input || !get_output || !free_output || !release_input || !uninit) {
         fprintf(stderr, "VENC ABI incomplete: %s\n", dlerror()); goto out;
     }
     memops = get_ops();
@@ -114,6 +112,8 @@ int main(int argc, char **argv)
     vbv_size = width * height * 2;
     if (vbv_size < 12 * 1024 * 1024) vbv_size = 12 * 1024 * 1024;
     memset(&config, 0, sizeof(config));
+    /* Zero requests Annex-B rather than length-prefixed AVC NAL units. */
+    config.bEncH264Nalu = 0;
     config.nInputWidth = config.nDstWidth = config.nStride = width;
     config.nInputHeight = config.nDstHeight = height;
     config.eInputFormat = VENC_PIXEL_YUV420SP;
@@ -134,6 +134,11 @@ int main(int argc, char **argv)
         int init_result = init(encoder, &config);
         if (init_result) { fprintf(stderr, "VideoEncInit failed: %d\n", init_result); goto destroy; }
     }
+    memset(&header_data, 0, sizeof(header_data));
+    if (get(encoder, (VENC_INDEXTYPE)ANDROID_VENC_INDEX_H264_SPS_PPS, &header_data) ||
+        !header_data.pBuffer || !header_data.nLength) {
+        fprintf(stderr, "VideoEncGetParameter(SPS/PPS) failed\n"); goto uninit;
+    }
     memset(&buffers, 0, sizeof(buffers)); buffers.nBufferNum = 1; buffers.nSizeY = width * height; buffers.nSizeC = width * height / 2;
     if (alloc(encoder, &buffers)) { fprintf(stderr, "input allocation failed\n"); goto uninit; }
     { struct timespec start, end; unsigned long total = 0; clock_gettime(CLOCK_MONOTONIC, &start);
@@ -142,9 +147,31 @@ int main(int argc, char **argv)
         if (get_input(encoder, &input)) { fprintf(stderr, "input dequeue failed\n"); goto release_input; }
         memset(input.pAddrVirY, 16 + (frame & 15), buffers.nSizeY); memset(input.pAddrVirC, 128, buffers.nSizeC);
         if (flush(encoder, &input) || add(encoder, &input) || encode(encoder)) { fprintf(stderr, "frame encode failed at %d\n", frame); goto release_input; }
+        {
+            VencInputBuffer used;
+            memset(&used, 0, sizeof(used));
+            if (used_input(encoder, &used) || return_input(encoder, &used)) {
+                fprintf(stderr, "input recycle failed at %d\n", frame); goto release_input;
+            }
+        }
         memset(&output, 0, sizeof(output));
         if (get_output(encoder, &output) || (!output.nSize0 && !output.nSize1)) { fprintf(stderr, "no H264 bitstream returned at %d\n", frame); goto release_input; }
-        total += output.nSize0 + output.nSize1; free_output(encoder, &output);
+        total += output.nSize0 + output.nSize1;
+        if (frame == 0) {
+            const char *path = getenv("H618_DUMP_PATH");
+            if (path && *path) {
+                FILE *f = fopen(path, "wb");
+                if (!f || fwrite(header_data.pBuffer, 1, header_data.nLength, f) != header_data.nLength ||
+                    fwrite(output.pData0, 1, output.nSize0, f) != output.nSize0 ||
+                    (output.nSize1 && fwrite(output.pData1, 1, output.nSize1, f) != output.nSize1)) {
+                    fprintf(stderr, "bitstream dump failed\n");
+                    if (f) fclose(f);
+                    goto release_input;
+                }
+                fclose(f);
+            }
+        }
+        free_output(encoder, &output);
     }
     clock_gettime(CLOCK_MONOTONIC, &end);
     { double seconds = (end.tv_sec-start.tv_sec) + (end.tv_nsec-start.tv_nsec)/1e9;

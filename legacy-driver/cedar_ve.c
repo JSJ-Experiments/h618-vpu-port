@@ -186,9 +186,20 @@ struct VE_PROC_INFO {
 
 int g_dev_major = CEDARDEV_MAJOR;
 int g_dev_minor = CEDARDEV_MINOR;
+/* Reverse-engineering aid: capture the H.264 engine's programmed register
+ * banks in the IRQ handler, before userspace gets a chance to reset them.
+ * Disabled by default and used only by the guarded one-frame session. */
+static bool snapshot_venc_regs;
+static u32 venc_snapshot_global[0x40];
+static u32 venc_snapshot_isp[0x40];
+static u32 venc_snapshot_avc[0x40];
+static int venc_snapshot_state;
 /*S_IRUGO represent that g_dev_major can be read,but canot be write*/
 module_param(g_dev_major, int, 0444);
 module_param(g_dev_minor, int, 0444);
+module_param(snapshot_venc_regs, bool, 0444);
+MODULE_PARM_DESC(snapshot_venc_regs,
+		 "capture VE global and AVC register banks on the first encoder IRQ");
 
 struct iomap_para {
 	volatile char *regs_ve;
@@ -350,6 +361,7 @@ static irqreturn_t VideoEngineInterupt(int irq, void *dev)
 	int modual_sel;
 	unsigned int interrupt_enable;
 	struct iomap_para addrs = cedar_devp->iomap_addrs;
+	unsigned int i;
 
 	modual_sel = readl(addrs.regs_ve + 0x0);
 #ifdef CONFIG_ARCH_SUN3IW1P1
@@ -408,6 +420,23 @@ static irqreturn_t VideoEngineInterupt(int irq, void *dev)
 
 		/*modify by fangning 2013-05-22*/
 		if (status && interrupt_enable) {
+			/* H618's proprietary encoder programs its AVC unit at +0xb00,
+			 * unlike the V3/S3 encoder block at +0x000. Snapshot before
+			 * disabling the IRQ: the vendor library clears registers as
+			 * soon as IOCTL_WAIT_VE_EN returns. */
+			if (snapshot_venc_regs && !READ_ONCE(venc_snapshot_state)) {
+				for (i = 0; i < ARRAY_SIZE(venc_snapshot_global); i++)
+					venc_snapshot_global[i] =
+						readl(addrs.regs_ve + i * sizeof(u32));
+				for (i = 0; i < ARRAY_SIZE(venc_snapshot_isp); i++)
+					venc_snapshot_isp[i] =
+						readl(addrs.regs_ve + 0xa00 + i * sizeof(u32));
+				for (i = 0; i < ARRAY_SIZE(venc_snapshot_avc); i++)
+					venc_snapshot_avc[i] =
+						readl(addrs.regs_ve + 0xb00 + i * sizeof(u32));
+				smp_wmb();
+				WRITE_ONCE(venc_snapshot_state, 1);
+			}
 			/*disable interrupt*/
 			/*avc enc*/
 			if (modual_sel&(1<<7)) {
@@ -1065,6 +1094,7 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 {
 	long  ret = 0;
 	int ve_timeout = 0;
+	unsigned int i;
 	/*struct cedar_dev *devp;*/
 #ifdef USE_CEDAR_ENGINE
 	int rel_taskid = 0;
@@ -1355,6 +1385,29 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 
 			wait_event_timeout(wait_ve, cedar_devp->en_irq_flag, ve_timeout*HZ);
 			cedar_devp->en_irq_flag = 0;
+
+			if (snapshot_venc_regs &&
+			    cmpxchg(&venc_snapshot_state, 1, 2) == 1) {
+				smp_rmb();
+				for (i = 0; i < ARRAY_SIZE(venc_snapshot_global); i += 4)
+					pr_info("H618VE G %03x: %08x %08x %08x %08x\n",
+						i * 4, venc_snapshot_global[i],
+						venc_snapshot_global[i + 1],
+						venc_snapshot_global[i + 2],
+						venc_snapshot_global[i + 3]);
+				for (i = 0; i < ARRAY_SIZE(venc_snapshot_isp); i += 4)
+					pr_info("H618VE I %03x: %08x %08x %08x %08x\n",
+						0xa00 + i * 4, venc_snapshot_isp[i],
+						venc_snapshot_isp[i + 1],
+						venc_snapshot_isp[i + 2],
+						venc_snapshot_isp[i + 3]);
+				for (i = 0; i < ARRAY_SIZE(venc_snapshot_avc); i += 4)
+					pr_info("H618VE A %03x: %08x %08x %08x %08x\n",
+						0xb00 + i * 4, venc_snapshot_avc[i],
+						venc_snapshot_avc[i + 1],
+						venc_snapshot_avc[i + 2],
+						venc_snapshot_avc[i + 3]);
+			}
 
 			return cedar_devp->en_irq_value;
 

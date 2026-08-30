@@ -52,9 +52,11 @@ struct ScMemOpsS {
     unsigned int (*get_ve_addr_offset)(void);
 };
 
-/* Android12's VENC copies an extended CedarX table that adds a non-cached
- * allocator immediately after palloc. Keep the public-prefix definition for
- * callers, but hand its vendor encoder this exact extended layout. */
+/* Android12's decoder uses an extended table with open2 and a non-cached
+ * allocator. Its H.264 encoder does not: disassembly and callback tracing show
+ * that VENC consumes the original public CedarX order. Keep the two ABIs
+ * separate; inserting palloc_no_cache into the VENC table shifts both physical
+ * address callbacks and silently makes the hardware encode into address zero. */
 struct AndroidVdecScMemOpsS {
     int (*open)(void); int (*open2)(void *, void *); void (*close)(void);
     int (*total_size)(void); void *(*palloc)(int, void *, void *);
@@ -74,8 +76,10 @@ struct AndroidScMemOpsS {
     void *(*palloc)(int, void *, void *);
     void *(*palloc_no_cache)(int, void *, void *);
     void (*pfree)(void *, void *, void *); void (*flush_cache)(void *, int);
-    void *(*ve_get_phyaddr)(void *); void *(*ve_get_viraddr)(void *);
-    void *(*cpu_get_phyaddr)(void *); void *(*cpu_get_viraddr)(void *);
+    /* Android 12 orders both virtual-to-physical callbacks before the two
+     * physical-to-virtual callbacks (unlike the older public header). */
+    void *(*ve_get_phyaddr)(void *); void *(*cpu_get_phyaddr)(void *);
+    void *(*ve_get_viraddr)(void *); void *(*cpu_get_viraddr)(void *);
     int (*mem_set)(void *, int, size_t); int (*mem_cpy)(void *, void *, size_t);
     int (*mem_read)(void *, void *, size_t); int (*mem_write)(void *, void *, size_t);
     int (*setup)(void); int (*shutdown)(void);
@@ -277,6 +281,8 @@ static void *bridge_get_phyaddr(void *virt)
     offset = buffer ? (uintptr_t)virt - (uintptr_t)buffer->virt : 0;
     if (buffer)
         result = (uintptr_t)(buffer->dma_addr + offset);
+    BRIDGE_DEBUG("MemAdapter: virt %p -> dma 0x%lx%s\n", virt,
+                 (unsigned long)result, buffer ? "" : " (not found)");
     pthread_mutex_unlock(&g_lock);
     return (void *)result;
 }
@@ -293,6 +299,8 @@ static void *bridge_get_viraddr(void *dma_addr)
     offset = buffer ? address - (uintptr_t)buffer->dma_addr : 0;
     if (buffer)
         result = (uintptr_t)buffer->virt + offset;
+    BRIDGE_DEBUG("MemAdapter: dma %p -> virt 0x%lx%s\n", dma_addr,
+                 (unsigned long)result, buffer ? "" : " (not found)");
     pthread_mutex_unlock(&g_lock);
     return (void *)result;
 }
@@ -310,12 +318,16 @@ static int bridge_fd_by_vir(void *ptr) { (void)ptr; return -1; }
  * dynamic; advertise the reservation size, while dma_alloc_coherent remains
  * the authoritative allocation/failure point. */
 static int bridge_total_size(void) { return 128 * 1024 * 1024; }
-static unsigned int bridge_ve_offset(void) { return 0; }
+static unsigned int bridge_ve_offset(void)
+{
+    BRIDGE_DEBUG("MemAdapter: VE address offset -> 0\n");
+    return 0;
+}
 
 static struct AndroidScMemOpsS g_venc_memops = {
-    bridge_open, bridge_close, bridge_total_size, bridge_palloc, bridge_palloc, bridge_pfree,
-    bridge_flush_cache, bridge_get_phyaddr, bridge_get_viraddr,
-    bridge_get_phyaddr, bridge_get_viraddr, bridge_mem_set, bridge_mem_copy,
+    bridge_open, bridge_close, bridge_total_size, bridge_palloc, bridge_palloc,
+    bridge_pfree, bridge_flush_cache, bridge_get_phyaddr, bridge_get_phyaddr,
+    bridge_get_viraddr, bridge_get_viraddr, bridge_mem_set, bridge_mem_copy,
     bridge_mem_read, bridge_mem_write, bridge_noop, bridge_noop,
     bridge_palloc, bridge_ve_offset,
 };
