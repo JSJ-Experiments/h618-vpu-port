@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Temporarily replace distro Cedrus with the native H618 V4L2 port.
+set -Eeuo pipefail
+
+usage() { echo "usage: sudo $0 /path/to/sunxi-cedrus.ko -- command [args...]" >&2; exit 64; }
+[[ $# -ge 3 && $2 == -- ]] || usage
+[[ $EUID -eq 0 ]] || { echo 'must run as root' >&2; exit 77; }
+
+module=$1
+shift 2
+[[ -r $module ]] || { echo "module not readable: $module" >&2; exit 66; }
+device=${CEDAR_PLATFORM_DEVICE:-1c0e000.video-codec}
+device_path=/sys/bus/platform/devices/$device
+driver_link=$device_path/driver
+stock_module=$(modinfo -n sunxi_cedrus)
+[[ -r $stock_module ]] || { echo 'cannot locate distro sunxi_cedrus' >&2; exit 69; }
+
+restore() {
+  local status=$?
+  trap - EXIT INT TERM
+  set +e
+  sync
+  if [[ -L $driver_link ]]; then
+    echo "$device" > /sys/bus/platform/drivers/cedrus/unbind
+  fi
+  rmmod sunxi_cedrus || echo 'warning: could not remove experimental Cedrus' >&2
+  modprobe sunxi_cedrus || echo 'warning: could not reload distro Cedrus' >&2
+  if [[ ! -L $driver_link && -e /sys/bus/platform/drivers/cedrus/bind ]]; then
+    echo "$device" > /sys/bus/platform/drivers/cedrus/bind ||
+      echo 'warning: could not rebind distro Cedrus' >&2
+  fi
+  exit "$status"
+}
+trap restore EXIT INT TERM
+
+[[ -e $device_path ]] || { echo "missing VE platform device: $device_path" >&2; exit 70; }
+[[ -L $driver_link ]] || { echo 'VE is not bound to distro Cedrus' >&2; exit 71; }
+
+sync
+echo "$device" > /sys/bus/platform/drivers/cedrus/unbind
+rmmod sunxi_cedrus
+insmod "$module"
+[[ -L $driver_link ]] || { echo 'experimental Cedrus did not bind the VE' >&2; exit 72; }
+[[ -c /dev/video0 && -c /dev/video1 ]] || {
+  echo 'experimental Cedrus did not create decoder and encoder nodes' >&2
+  exit 73
+}
+
+"$@"

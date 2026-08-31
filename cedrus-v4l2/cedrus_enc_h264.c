@@ -1494,7 +1494,9 @@ static const struct v4l2_ctrl_config cedrus_enc_h264_ctrl_configs[] = {
 		.id		= V4L2_CID_MPEG_VIDEO_H264_LEVEL,
 		.min		= V4L2_MPEG_VIDEO_H264_LEVEL_1_0,
 		.max		= V4L2_MPEG_VIDEO_H264_LEVEL_6_2,
-		.def		= V4L2_MPEG_VIDEO_H264_LEVEL_3_1,
+		/* The advertised 3840x2160 mode requires at least level 5.1.
+		 * Applications may still select a lower level for smaller formats. */
+		.def		= V4L2_MPEG_VIDEO_H264_LEVEL_5_1,
 		.ops		= &cedrus_context_ctrl_ops,
 	},
 

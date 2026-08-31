@@ -98,17 +98,23 @@ int main(int argc, char **argv)
     struct mapped_buffer raw, coded;
     struct timespec start, end;
     unsigned int width, height, frames, raw_size, i, total = 0;
+    FILE *output = NULL;
     int fd;
     double seconds;
 
-    if (argc != 5) {
-        fprintf(stderr, "usage: %s /dev/videoN width height frames\n", argv[0]);
+    if (argc != 5 && argc != 6) {
+        fprintf(stderr, "usage: %s /dev/videoN width height frames [output.h264]\n",
+                argv[0]);
         return 64;
     }
     width = strtoul(argv[2], NULL, 0);
     height = strtoul(argv[3], NULL, 0);
     frames = strtoul(argv[4], NULL, 0);
     if (!width || !height || !frames || (width & 1) || (height & 1)) return 64;
+    if (argc == 6) {
+        output = fopen(argv[5], "wb");
+        if (!output) die("fopen output");
+    }
     raw_size = width * height * 3 / 2;
     fd = open(argv[1], O_RDWR | O_NONBLOCK);
     if (fd < 0) die("open");
@@ -116,6 +122,8 @@ int main(int argc, char **argv)
     set_format(fd, cap_type, V4L2_PIX_FMT_H264, width, height, 8 * 1024 * 1024);
     set_control(fd, V4L2_CID_MPEG_VIDEO_H264_I_FRAME_QP, 20);
     set_control(fd, V4L2_CID_MPEG_VIDEO_H264_P_FRAME_QP, 22);
+    set_control(fd, V4L2_CID_MPEG_VIDEO_H264_LEVEL,
+                V4L2_MPEG_VIDEO_H264_LEVEL_5_1);
 #ifdef V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR
     set_control(fd, V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR, 1);
 #endif
@@ -135,6 +143,8 @@ int main(int argc, char **argv)
         if (poll(&pfd, 1, 10000) <= 0) die("poll");
         used = dequeue_one(fd, cap_type);
         (void)dequeue_one(fd, out_type);
+        if (output && fwrite(coded.addr, 1, used, output) != used)
+            die("fwrite output");
         total += used;
         if (i + 1 < frames) {
             queue_one(fd, cap_type, 0);
@@ -149,6 +159,7 @@ int main(int argc, char **argv)
     xioctl(fd, VIDIOC_STREAMOFF, (void *)&cap_type);
     munmap(raw.addr, raw.length);
     munmap(coded.addr, coded.length);
+    if (output && fclose(output)) die("fclose output");
     close(fd);
     return 0;
 }
