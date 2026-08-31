@@ -228,6 +228,7 @@ struct cedar_dev {
 	struct timer_list cedar_engine_timer_rel;
 
 	u32 irq;						 /* cedar video engine irq number	   */
+	bool irq_requested;
 	u32 de_irq_flag;					/* flag of video decoder engine irq generated */
 	u32 de_irq_value;					/* value of video decoder engine irq		  */
 	u32 en_irq_flag;					/* flag of video encoder engine irq generated */
@@ -262,6 +263,10 @@ struct cedar_dev {
 
 struct ve_info { /* each object will bind a new file handler */
 	unsigned int set_vol_flag;
+	/* Number of IOCTL_ENGINE_REQ references owned by this file.  The vendor
+	 * driver kept only a device-global count, so an abnormal userspace exit
+	 * could leave the VE running after its DMA buffers had been freed. */
+	unsigned int engine_refs;
 
 	struct mutex lock_flag_io;
 	u32 lock_flags; /* if flags is 0, means unlock status */
@@ -339,6 +344,28 @@ static void free_coherent_buffers(struct ve_info *info)
 				  buffer->cpu_addr, buffer->dma_addr);
 		kfree(buffer);
 	}
+}
+
+/*
+ * Stop every VE DMA master before memory belonging to a failed CedarX client
+ * can return to the page allocator.  H618 has no IOMMU protecting the rest of
+ * RAM from stale physical addresses.  Freeing a coherent allocation while an
+ * encode/decode is still active can therefore corrupt arbitrary processes and
+ * filesystem data.
+ *
+ * This is intentionally a reset rather than a best-effort register stop: the
+ * proprietary userspace can exit at any point in a job, and not every engine's
+ * stop semantics are known.  The legacy validation driver is exclusive with
+ * Cedrus, so resetting the shared VE is the only safe failure policy.
+ */
+static void cedar_quiesce_dma(void)
+{
+	if (!cedar_devp || IS_ERR_OR_NULL(cedar_devp->reset))
+		return;
+
+	reset_control_assert(cedar_devp->reset);
+	if (cedar_devp->irq_requested)
+		synchronize_irq(cedar_devp->irq);
 }
 
 static struct cedar_coherent_buf *find_coherent_buffer(struct ve_info *info,
@@ -565,38 +592,43 @@ static LIST_HEAD(del_task_list);
 #define TASK_RELEASE   0xaa
 #define SIG_CEDAR		35
 
-int enable_cedar_hw_clk(void)
+static int enable_cedar_hw_clk(void)
 {
 	unsigned long flags;
-	int res = 0;
+	int res;
+
 	spin_lock_irqsave(&cedar_devp->lock, flags);
-
-	if (clk_status == 1)
-		goto out;
-
-	clk_status = 1;
-
+	if (clk_status == 1) {
+		spin_unlock_irqrestore(&cedar_devp->lock, flags);
+		return 0;
+	}
 	spin_unlock_irqrestore(&cedar_devp->lock, flags);
 
-	reset_control_deassert(cedar_devp->reset);
+	res = reset_control_deassert(cedar_devp->reset);
+	if (res)
+		goto error_state;
 
-	if (clk_prepare_enable(cedar_devp->bus_clk)) {
+	res = clk_prepare_enable(cedar_devp->bus_clk);
+	if (res) {
 		VE_LOGW("enable bus clk gating failed;\n");
-		res = -EINVAL;
-		goto out;
+		goto error_reset;
 	}
 
-	if (clk_prepare_enable(cedar_devp->mbus_clk)) {
+	res = clk_prepare_enable(cedar_devp->mbus_clk);
+	if (res) {
 		VE_LOGW("enable mbus clk gating failed;\n");
-		res = -EINVAL;
-		goto out;
+		goto error_bus;
 	}
 
-	if (clk_prepare_enable(cedar_devp->ve_clk)) {
+	res = clk_prepare_enable(cedar_devp->ve_clk);
+	if (res) {
 		VE_LOGW("enable ve clk gating failed;\n");
-		res = -EINVAL;
-		goto out;
+		goto error_mbus;
 	}
+
+	spin_lock_irqsave(&cedar_devp->lock, flags);
+	clk_status = 1;
+	spin_unlock_irqrestore(&cedar_devp->lock, flags);
 
 	AW_MEM_INIT_LIST_HEAD(&cedar_devp->list);
 
@@ -604,11 +636,22 @@ int enable_cedar_hw_clk(void)
 	printk("%s,%d\n", __func__, __LINE__);
 #endif
 
-out:
+	return 0;
+
+error_mbus:
+	clk_disable_unprepare(cedar_devp->mbus_clk);
+error_bus:
+	clk_disable_unprepare(cedar_devp->bus_clk);
+error_reset:
+	reset_control_assert(cedar_devp->reset);
+error_state:
+	spin_lock_irqsave(&cedar_devp->lock, flags);
+	clk_status = 0;
+	spin_unlock_irqrestore(&cedar_devp->lock, flags);
 	return res;
 }
 
-int disable_cedar_hw_clk(void)
+static int disable_cedar_hw_clk(void)
 {
 	unsigned long flags;
 	int res = 0;
@@ -623,10 +666,11 @@ int disable_cedar_hw_clk(void)
 
 	spin_unlock_irqrestore(&cedar_devp->lock, flags);
 
+	/* Stop DMA before removing any bus clock or buffer mapping. */
+	cedar_quiesce_dma();
 	clk_disable_unprepare(cedar_devp->ve_clk);
 	clk_disable_unprepare(cedar_devp->mbus_clk);
 	clk_disable_unprepare(cedar_devp->bus_clk);
-	reset_control_assert(cedar_devp->reset);
 
 	unmap_dma_buf_addr(1, 0, 0);
 
@@ -638,7 +682,8 @@ out:
 	return res;
 }
 
-void cedardev_insert_task(struct cedarv_engine_task *new_task)
+#ifdef USE_CEDAR_ENGINE
+static void cedardev_insert_task(struct cedarv_engine_task *new_task)
 {
 	struct cedarv_engine_task *task_entry;
 	unsigned long flags;
@@ -670,7 +715,7 @@ void cedardev_insert_task(struct cedarv_engine_task *new_task)
 	spin_unlock_irqrestore(&cedar_devp->lock, flags);
 }
 
-int cedardev_del_task(int task_id)
+static int cedardev_del_task(int task_id)
 {
 	struct cedarv_engine_task *task_entry;
 	unsigned long flags;
@@ -690,8 +735,9 @@ int cedardev_del_task(int task_id)
 
 	return -1;
 }
+#endif
 
-int cedardev_check_delay(int check_prio)
+static int cedardev_check_delay(int check_prio)
 {
 	struct cedarv_engine_task *task_entry;
 	int timeout_total = 0;
@@ -1070,9 +1116,9 @@ static void unmap_dma_buf_addr(int unmap_all, int fd, unsigned int addr)
 			buf_info->p_id);
 			#endif
 
-			if (buf_info->dma_buf > 0) {
-				if (buf_info->attachment > 0) {
-					if (buf_info->sgt > 0) {
+			if (buf_info->dma_buf) {
+				if (buf_info->attachment) {
+					if (buf_info->sgt) {
 						dma_buf_unmap_attachment(buf_info->attachment,
 											buf_info->sgt,
 												DMA_BIDIRECTIONAL);
@@ -1120,6 +1166,8 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 			VE_LOGW("SET_DEBUG_INFO copy_from_user fail\n");
 			return -EFAULT;
 		}
+		if (!head_info.length || head_info.length > SZ_1M)
+			return -EINVAL;
 
 
 		/*VE_LOGD("size of debug_head_info: %d", (int)sizeof(struct debug_head_info)); */
@@ -1290,8 +1338,14 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 			cedar_devp->ref_count++;
 			if (cedar_devp->ref_count == 1) {
 				cedar_devp->last_min_freq = 0;
-				enable_cedar_hw_clk();
+				ret = enable_cedar_hw_clk();
+				if (ret < 0) {
+					cedar_devp->ref_count--;
+					up(&cedar_devp->sem);
+					return ret;
+				}
 			}
+			info->engine_refs++;
 			up(&cedar_devp->sem);
 			break;
 #endif
@@ -1303,6 +1357,12 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 #else
 			if (down_interruptible(&cedar_devp->sem))
 				return -ERESTARTSYS;
+			if (!info->engine_refs || cedar_devp->ref_count <= 0) {
+				VE_LOGW("engine release without a matching request");
+				up(&cedar_devp->sem);
+				return -EINVAL;
+			}
+			info->engine_refs--;
 			cedar_devp->ref_count--;
 
 			if (cedar_devp->ref_count < 0) {
@@ -1578,6 +1638,14 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 					return -EFAULT;
 				}
 
+				if (!ve_info.proc_info_len ||
+				    ve_info.proc_info_len > VE_DEBUGFS_BUF_SIZE) {
+					VE_LOGW("invalid proc info length %u\n",
+						ve_info.proc_info_len);
+					mutex_unlock(&ve_debug_proc_info.lock_proc);
+					return -EINVAL;
+				}
+
 				mutex_lock(&vi->lock_flag_io);
 				vi->lock_flags |= lock_type;
 				mutex_unlock(&vi->lock_flag_io);
@@ -1602,6 +1670,14 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 				mutex_unlock(&vi->lock_flag_io);
 
 				channel_id = ve_debug_proc_info.cur_channel_id;
+				if (channel_id >= VE_DEBUGFS_MAX_CHANNEL ||
+				    !ve_debug_proc_info.proc_buf[channel_id] ||
+				    !ve_debug_proc_info.proc_len[channel_id] ||
+				    ve_debug_proc_info.proc_len[channel_id] >
+					VE_DEBUGFS_BUF_SIZE) {
+					mutex_unlock(&ve_debug_proc_info.lock_proc);
+					return -EINVAL;
+				}
 				if (copy_from_user(ve_debug_proc_info.proc_buf[channel_id],
 								  (void __user *)arg,
 								ve_debug_proc_info.proc_len[channel_id])) {
@@ -1620,8 +1696,13 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 				if (cedar_devp->debug_root == NULL)
 					return 0;
 
+				if (arg >= VE_DEBUGFS_MAX_CHANNEL)
+					return -EINVAL;
 				channel_id = arg;
+				mutex_lock(&ve_debug_proc_info.lock_proc);
 				ve_debug_proc_info.proc_buf[channel_id] = NULL;
+				ve_debug_proc_info.proc_len[channel_id] = 0;
+				mutex_unlock(&ve_debug_proc_info.lock_proc);
 
 				break;
 			}
@@ -1860,10 +1941,16 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 			buffer = find_coherent_buffer(info, request.handle);
 			if (!buffer)
 				return -ENOENT;
+			/* A userspace error must not turn this allocation into stale
+			 * in-flight DMA after it has returned to the page allocator. */
+			if (info->engine_refs)
+				cedar_quiesce_dma();
 			list_del(&buffer->list);
 			dma_free_coherent(cedar_devp->plat_dev, buffer->size,
 					  buffer->cpu_addr, buffer->dma_addr);
 			kfree(buffer);
+			if (info->engine_refs)
+				reset_control_deassert(cedar_devp->reset);
 			break;
 		}
 		default:
@@ -1884,9 +1971,11 @@ static int cedardev_open(struct inode *inode, struct file *filp)
 		return -ENOMEM;
 
 	info->set_vol_flag = 0;
+	info->engine_refs = 0;
 
 	filp->private_data = info;
 	if (down_interruptible(&cedar_devp->sem)) {
+		kfree(info);
 		return -ERESTARTSYS;
 	}
 
@@ -1914,6 +2003,11 @@ static int cedardev_release(struct inode *inode, struct file *filp)
 
 	info = filp->private_data;
 	mutex_lock(&info->lock_flag_io);
+	/* A client that dies with an engine reference or lock may have left DMA
+	 * live.  Reset first; only then may its mappings be unmapped or freed. */
+	if (info->engine_refs || info->lock_flags ||
+	    !list_empty(&info->coherent_buffers))
+		cedar_quiesce_dma();
 	//if the process abort, this will free iommu_buffer
 	unmap_dma_buf_addr(1, 0, 0);
 
@@ -1945,8 +2039,19 @@ static int cedardev_release(struct inode *inode, struct file *filp)
 	mutex_destroy(&info->lock_flag_io);
 	free_coherent_buffers(info);
 
-	if (down_interruptible(&cedar_devp->sem)) {
-		return -ERESTARTSYS;
+	/* release() must finish cleanup even when the exiting task has a pending
+	 * signal.  Drop every engine reference that userspace failed to release. */
+	down(&cedar_devp->sem);
+	if (info->engine_refs) {
+		if (info->engine_refs > cedar_devp->ref_count)
+			cedar_devp->ref_count = 0;
+		else
+			cedar_devp->ref_count -= info->engine_refs;
+		info->engine_refs = 0;
+		if (!cedar_devp->ref_count)
+			disable_cedar_hw_clk();
+		else
+			reset_control_deassert(cedar_devp->reset);
 	}
 
 #if defined CONFIG_ARCH_SUN9IW1P1
@@ -2149,7 +2254,7 @@ static const struct file_operations ve_debugfs_fops = {
 	.release = ve_debugfs_release,
 };
 
-int sunxi_ve_debug_register_driver(void)
+static int sunxi_ve_debug_register_driver(void)
 {
 	struct dentry *dent;
 
@@ -2176,7 +2281,7 @@ int sunxi_ve_debug_register_driver(void)
 	return 0;
 }
 
-void sunxi_ve_debug_unregister_driver(void)
+static void sunxi_ve_debug_unregister_driver(void)
 {
 	if (cedar_devp->debug_root == NULL) {
 		VE_LOGW("note: debug root already is null");
@@ -2272,16 +2377,6 @@ static int deal_with_resouce(struct platform_device *pdev)
 	cedar_devp->mainline_binding =
 		of_device_is_compatible(node, "allwinner,sun50i-h616-video-engine");
 
-	/*4.register irq function*/
-	cedar_devp->irq = irq_of_parse_and_map(node, 0);
-	VE_LOGI("cedar-ve the get irq is %d\n", cedar_devp->irq);
-
-	ret = request_irq(cedar_devp->irq, VideoEngineInterupt, 0, "cedar_dev", NULL);
-	if (ret < 0) {
-		VE_LOGW("request irq err\n");
-		return -1;
-	}
-
 	memset(&cedar_devp->iomap_addrs, 0, sizeof(struct iomap_para));
 	// map for macc io space
 	cedar_devp->iomap_addrs.regs_ve = of_iomap(node, 0);
@@ -2353,6 +2448,23 @@ static int deal_with_resouce(struct platform_device *pdev)
 	if (!cedar_devp->mainline_binding)
 		set_system_register();
 
+	/* Register the handler only after every object it dereferences exists.
+	 * The vendor ordering exposed a NULL register map if a pending VE IRQ fired
+	 * between request_irq() and of_iomap(). */
+	ret = platform_get_irq(pdev, 0);
+	if (ret < 0)
+		return ret;
+	cedar_devp->irq = ret;
+	VE_LOGI("cedar-ve the get irq is %d\n", cedar_devp->irq);
+
+	ret = request_irq(cedar_devp->irq, VideoEngineInterupt, 0,
+			  "cedar_dev", cedar_devp);
+	if (ret < 0) {
+		VE_LOGW("request irq err\n");
+		return ret;
+	}
+	cedar_devp->irq_requested = true;
+
 	return 0;
 }
 
@@ -2420,12 +2532,47 @@ region_del:
 	return ret;
 }
 
+static void destroy_char_device(void)
+{
+	dev_t dev = MKDEV(g_dev_major, g_dev_minor);
+
+	cdev_del(&cedar_devp->cdev);
+	device_destroy(cedar_devp->class, dev);
+	class_destroy(cedar_devp->class);
+	unregister_chrdev_region(dev, 1);
+}
+
+static void release_platform_resources(void)
+{
+	/* Reset while the register mapping and IRQ handler still exist. */
+	cedar_quiesce_dma();
+	if (clk_status)
+		disable_cedar_hw_clk();
+
+	if (cedar_devp->irq_requested) {
+		free_irq(cedar_devp->irq, cedar_devp);
+		cedar_devp->irq_requested = false;
+	}
+
+	if (cedar_devp->iomap_addrs.regs_ve) {
+		iounmap(cedar_devp->iomap_addrs.regs_ve);
+		cedar_devp->iomap_addrs.regs_ve = NULL;
+	}
+	if (cedar_devp->iomap_addrs.regs_sys_cfg) {
+		iounmap(cedar_devp->iomap_addrs.regs_sys_cfg);
+		cedar_devp->iomap_addrs.regs_sys_cfg = NULL;
+	}
+	if (cedar_devp->iomap_addrs.regs_ccmu) {
+		iounmap(cedar_devp->iomap_addrs.regs_ccmu);
+		cedar_devp->iomap_addrs.regs_ccmu = NULL;
+	}
+}
+
 static ssize_t ve_info_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
 {
 	ssize_t count = 0;
 	int i = 0;
-	int nTotalSize = 0;
 
 	/* VE_LOGD("show: buf = %p\n",buf); */
 
@@ -2435,19 +2582,19 @@ static ssize_t ve_info_show(struct device *dev,
 	for (i = 0; i < MAX_VE_DEBUG_INFO_NUM; i++) {
 		if (cedar_devp->debug_info[i].head_info.pid != 0
 		&& cedar_devp->debug_info[i].head_info.tid != 0) {
-			nTotalSize += cedar_devp->debug_info[i].head_info.length;
-
 			#if 0
 			VE_LOGD("cpy-show: i = %d, size = %d, total size = %d, data = %p, cout = %d, id = %d, %d\n",
 					i,
 					cedar_devp->debug_info[i].head_info.length,
-					nTotalSize,
+					(int)count,
 					cedar_devp->debug_info[i].data, (int)count,
 					cedar_devp->debug_info[i].head_info.pid,
 					cedar_devp->debug_info[i].head_info.tid);
 			#endif
 
-			if (nTotalSize > PAGE_SIZE)
+			if (!cedar_devp->debug_info[i].data ||
+			    cedar_devp->debug_info[i].head_info.length >
+				PAGE_SIZE - count)
 				break;
 
 			memcpy(buf + count, cedar_devp->debug_info[i].data,
@@ -2478,25 +2625,22 @@ static struct attribute_group ve_attribute_group = {
 
 static int cedardev_init(struct platform_device *pdev)
 {
-	int ret = 0;
+	bool char_created = false;
+	bool sysfs_created = false;
+	int ret;
 	int i = 0;
 
 	VE_LOGD("install start!!!\n");
 
 	(void)i;
-	cedar_devp = kmalloc(sizeof(struct cedar_dev), GFP_KERNEL);
+	cedar_devp = kzalloc(sizeof(struct cedar_dev), GFP_KERNEL);
 	if (cedar_devp == NULL) {
 		VE_LOGW("malloc mem for cedar device err\n");
 		return -ENOMEM;
 	}
-	memset(cedar_devp, 0, sizeof(struct cedar_dev));
 
-	//1.register cdev
-	if (create_char_device() != 0) {
-		ret = -EINVAL;
-		goto free_devp;
-	}
-	//2.init some data
+	/* Initialise every object reachable from the IRQ handler before requesting
+	 * platform resources or publishing /dev/cedar_dev. */
 	spin_lock_init(&cedar_devp->lock);
 	cedar_devp->plat_dev = &pdev->dev;
 	sema_init(&cedar_devp->sem, 1);
@@ -2515,28 +2659,24 @@ static int cedardev_init(struct platform_device *pdev)
 	/* Release can run before the first clock-enable path. */
 	AW_MEM_INIT_LIST_HEAD(&cedar_devp->list);
 
-	//3.config some register
-	if (deal_with_resouce(pdev)) {
-		ret = -EINVAL;
-		goto free_devp;
-	}
+	ret = deal_with_resouce(pdev);
+	if (ret)
+		goto release_resources;
 
-	//4.create sysfs file on new device
-	if (sysfs_create_group(&cedar_devp->dev->kobj, &ve_attribute_group)) {
-		VE_LOGW("sysfs create group failed, maybe ok!");
-		ret = -EINVAL;
-		goto free_devp;
-	}
+	ret = create_char_device();
+	if (ret)
+		goto release_resources;
+	char_created = true;
 
-	//5.create debugfs file
-#if IS_ENABLED(CONFIG_DEBUG_FS)
-	ret = sunxi_ve_debug_register_driver();
+	ret = sysfs_create_group(&cedar_devp->dev->kobj, &ve_attribute_group);
 	if (ret) {
-		VE_LOGW("sunxi ve debug register fail");
-		ret = -EINVAL;
-		goto free_devp;
+		VE_LOGW("sysfs create group failed, maybe ok!");
+		goto destroy_char;
 	}
+	sysfs_created = true;
 
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+	/* Allocate and initialise backing memory before debugfs can invoke it. */
 	memset(&ve_debug_proc_info, 0, sizeof(struct ve_debugfs_buffer));
 	for (i = 0; i < VE_DEBUGFS_MAX_CHANNEL; i++)
 		ve_debug_proc_info.proc_buf[i] = NULL;
@@ -2546,9 +2686,18 @@ static int cedardev_init(struct platform_device *pdev)
 	if (!ve_debug_proc_info.data) {
 		VE_LOGE("kmalloc proc buffer failed!\n");
 		ret = -ENOMEM;
-		goto free_devp;
+		goto remove_sysfs;
 	}
 	mutex_init(&ve_debug_proc_info.lock_proc);
+
+	ret = sunxi_ve_debug_register_driver();
+	if (ret) {
+		VE_LOGW("sunxi ve debug register fail");
+		kfree(ve_debug_proc_info.data);
+		ve_debug_proc_info.data = NULL;
+		goto remove_sysfs;
+	}
+
 	VE_LOGI("ve_debug_proc_info:%p, data:%p, lock:%p\n",
 			&ve_debug_proc_info,
 			ve_debug_proc_info.data,
@@ -2559,26 +2708,34 @@ static int cedardev_init(struct platform_device *pdev)
 	VE_LOGD("install end!!!\n");
 	return 0;
 
-free_devp:
+remove_sysfs:
+	if (sysfs_created)
+		sysfs_remove_group(&cedar_devp->dev->kobj, &ve_attribute_group);
+destroy_char:
+	if (char_created)
+		destroy_char_device();
+release_resources:
+	release_platform_resources();
 	kfree(cedar_devp);
+	cedar_devp = NULL;
 	return ret;
 }
 
 static void cedardev_exit(void)
 {
 	int i = 0;
-	dev_t dev;
 
-	dev = MKDEV(g_dev_major, g_dev_minor);
-
-	free_irq(cedar_devp->irq, NULL);
-	iounmap(cedar_devp->iomap_addrs.regs_ve);
-	/* Destroy char device */
-
-	cdev_del(&cedar_devp->cdev);
-	device_destroy(cedar_devp->class, dev);
-	class_destroy(cedar_devp->class);
-	unregister_chrdev_region(dev, 1);
+	/* Remove user-visible callbacks before tearing down their backing state. */
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+	sunxi_ve_debug_unregister_driver();
+	kfree(ve_debug_proc_info.data);
+	ve_debug_proc_info.data = NULL;
+#endif
+	sysfs_remove_group(&cedar_devp->dev->kobj, &ve_attribute_group);
+	destroy_char_device();
+	/* Never hand the platform device back to Cedrus with legacy DMA or an IRQ
+	 * still active.  This also covers a client that skipped ENGINE_REL. */
+	release_platform_resources();
 
 	//todo: power clk not support
 #if defined CONFIG_ARCH_SUN9IW1P1
@@ -2601,12 +2758,8 @@ static void cedardev_exit(void)
 		}
 	}
 
-#if IS_ENABLED(CONFIG_DEBUG_FS)
-	sunxi_ve_debug_unregister_driver();
-	kfree(ve_debug_proc_info.data);
-#endif
-
 	kfree(cedar_devp);
+	cedar_devp = NULL;
 
 	VE_LOGD("cedar-ve exit");
 }
