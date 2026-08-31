@@ -8,6 +8,7 @@ sunxi-cedrus-y = cedrus.o \
 		 cedrus_dec_h265.o \
 		 cedrus_dec_mpeg2.o \
 		 cedrus_dec_vp8.o \
+		 cedrus_dec_vp9.o \
 		 cedrus_enc.o \
 		 cedrus_enc_h264.o \
 		 cedrus_engine.o \

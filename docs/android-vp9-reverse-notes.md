@@ -18,6 +18,14 @@ library do not apply to H618.
   `0x38`, with completion/error bits 0--2.
 * `VP9SetTopReg` writes top-register offsets `0xc4`, `0xc8`, and `0xec`.
 
+CedarX's public `veInterface.h` identifies group 5 as the H.265 decoder group.
+The VP9 register names and offsets confirm that H618 reuses the block at VE
+offset `0x500`, with VP9-specific semantics. The recovered map is now recorded
+in `cedrus_regs.h`. Vendor allocation routines additionally establish two
+fixed working areas of `0x88000` and `0x1f4000` bytes and two segment maps of
+32 bytes per 64x64 superblock; the native context skeleton records these
+requirements without advertising incomplete VP9 support.
+
 This proves H618 VP9 belongs in the shared VE driver and can coexist with the
 other Cedrus engines. It is not a separately mapped Hantro block. The next
 native implementation step is to map the remaining `libawvp9HwAL.so` register

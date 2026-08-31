@@ -83,6 +83,9 @@ int cedrus_dec_format_coded_configure(struct cedrus_context *ctx)
 	case V4L2_PIX_FMT_HEVC_SLICE:
 		value |= VE_MODE_DEC_H265;
 		break;
+	case V4L2_PIX_FMT_VP9_FRAME:
+		value |= VE_MODE_DEC_VP9;
+		break;
 	default:
 		return -EINVAL;
 	}
