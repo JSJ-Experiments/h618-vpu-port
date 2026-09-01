@@ -29,6 +29,8 @@ struct cedrus_engine_ops {
 
 	int (*buffer_setup)(struct cedrus_context *ctx,
 			    struct cedrus_buffer *buffer);
+	void (*buffer_finish)(struct cedrus_context *ctx,
+			      struct cedrus_buffer *buffer);
 	void (*buffer_cleanup)(struct cedrus_context *ctx,
 			       struct cedrus_buffer *buffer);
 
@@ -61,6 +63,7 @@ struct cedrus_engine {
 	unsigned int				ctx_size;
 	unsigned int				job_size;
 	unsigned int				buffer_size;
+	unsigned int				coded_buffer_size;
 };
 
 /* Ctrl */
@@ -85,6 +88,8 @@ void cedrus_engine_cleanup(struct cedrus_context *ctx);
 
 int cedrus_engine_buffer_setup(struct cedrus_context *ctx,
 			       struct cedrus_buffer *buffer);
+void cedrus_engine_buffer_finish(struct cedrus_context *ctx,
+				 struct cedrus_buffer *buffer);
 void cedrus_engine_buffer_cleanup(struct cedrus_context *ctx,
 				  struct cedrus_buffer *buffer);
 

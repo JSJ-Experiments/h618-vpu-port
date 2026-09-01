@@ -20,7 +20,10 @@ restore() {
   local status=$?
   trap - EXIT INT TERM
   set +e
-  sync
+  if [[ ${CEDRUS_KEEP_EXPERIMENTAL:-0} == 1 ]]; then
+    echo 'retaining experimental Cedrus module' >&2
+    exit "$status"
+  fi
   if [[ -L $driver_link ]]; then
     echo "$device" > /sys/bus/platform/drivers/cedrus/unbind
   fi
@@ -37,7 +40,6 @@ trap restore EXIT INT TERM
 [[ -e $device_path ]] || { echo "missing VE platform device: $device_path" >&2; exit 70; }
 [[ -L $driver_link ]] || { echo 'VE is not bound to distro Cedrus' >&2; exit 71; }
 
-sync
 echo "$device" > /sys/bus/platform/drivers/cedrus/unbind
 rmmod sunxi_cedrus
 insmod "$module"

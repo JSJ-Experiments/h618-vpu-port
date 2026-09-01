@@ -987,4 +987,8 @@
 #define VE_ENC_AVC_ROI_3_AREA_REG		(VE_ENGINE_ENC_H264_BASE + 0xdc)
 #define VE_ENC_AVC_H618_CTRL_REG			(VE_ENGINE_ENC_H264_BASE + 0xe4)
 
+/* H618 JPEG quantization SRAM shares the final two AVC register words. */
+#define VE_ENC_AVC_SRAM_OFFSET_REG		(VE_ENGINE_ENC_H264_BASE + 0xe0)
+#define VE_ENC_AVC_SRAM_DATA_REG			(VE_ENGINE_ENC_H264_BASE + 0xe4)
+
 #endif

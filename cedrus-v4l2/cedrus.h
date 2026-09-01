@@ -37,6 +37,7 @@ enum cedrus_codec {
 	CEDRUS_CODEC_H265,
 	CEDRUS_CODEC_VP8,
 	CEDRUS_CODEC_VP9,
+	CEDRUS_CODEC_JPEG,
 };
 
 enum cedrus_irq_status {
@@ -54,6 +55,7 @@ enum cedrus_capability {
 	CEDRUS_CAPABILITY_VP8_DEC	= BIT(5),
 	CEDRUS_CAPABILITY_H264_ENC	= BIT(6),
 	CEDRUS_CAPABILITY_VP9_DEC	= BIT(7),
+	CEDRUS_CAPABILITY_JPEG_ENC	= BIT(8),
 };
 
 struct cedrus_context;

@@ -18,9 +18,23 @@ encodes 25 4K frames in 0.623 seconds (40.10 fps), exceeding the advertised
 4K25 capability. A slower v4l2-ctl result was traced to refilling 311 MB of raw
 input from userspace on the 1 GB board.
 
+Native baseline JPEG encoding is validated at 320x240, 640x480, 1280x720 and
+1920x1080, including qualities 1, 50, 90 and 100. Every output has a valid
+JFIF marker graph, decodes cleanly with FFmpeg/ImageMagick, and reports the
+requested 4:2:0 dimensions. A 120-frame 1080p benchmark completed at 133.25
+fps, above the H618's advertised 1080p60 JPEG rate. Hardware produces the
+quantized entropy payload; the driver adds the 623-byte baseline JFIF header
+and EOI after VB2 has synchronized the coded buffer for CPU access.
+
+Stock Cedrus decode is hardware-validated for MPEG-2, H.264, H.265/HEVC and
+VP8. Panfrost is also validated under XFCE/Xorg with an accelerated Mali-G31
+renderer.
+
 The module is currently validated as a guarded replacement: remove distro
 `sunxi_cedrus`, load its V4L2/VB2 dependencies and the experimental module,
-run the test, then unload it and restore distro `sunxi_cedrus`.
+run the test, then unload it and restore distro `sunxi_cedrus`. The test helper
+can retain the experimental module with `CEDRUS_KEEP_EXPERIMENTAL=1` for a
+multi-test session.
 
 ## Android reference path
 
@@ -34,8 +48,7 @@ own the VE concurrently.
 
 ## Remaining scope
 
-* Validate all stock H.264/H.265/VP8/MPEG-2 stateless decode paths on H618.
 * VP9 and AVS2 are not implemented by this Cedrus generation and require new
   codec engine support rather than format advertisement.
-* Add the H618 JPEG encoder path.
-* Validate Panfrost desktop rendering with the enabled GPU DT node.
+* Package the native module for persistent boot and validate decode/encode
+  coexistence under normal applications.

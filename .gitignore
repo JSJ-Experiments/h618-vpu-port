@@ -1,5 +1,6 @@
 private-android/
 artifacts/
+logs/
 runtime-probe/
 android-bridge/*.so
 android-bridge/*-probe
@@ -20,3 +21,4 @@ cedrus-v4l2/*.cmd
 cedrus-v4l2/.*.cmd
 cedrus-v4l2/Module.symvers
 cedrus-v4l2/modules.order
+tools/v4l2-encode-bench

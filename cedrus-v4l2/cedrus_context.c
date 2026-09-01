@@ -425,18 +425,22 @@ static int cedrus_context_buffer_init(struct vb2_buffer *vb2_buffer)
 	const struct cedrus_engine *engine = ctx->engine;
 	unsigned int format_type =
 		cedrus_proc_format_type(ctx->proc, vb2_buffer->type);
+	unsigned int buffer_size;
 	int ret;
 
-	if (!engine->buffer_size)
+	if (format_type == CEDRUS_FORMAT_TYPE_PICTURE)
+		buffer_size = engine->buffer_size;
+	else
+		buffer_size = engine->coded_buffer_size;
+
+	if (!buffer_size)
 		return 0;
 
-	/* Allocate engine-specific buffer for picture buffers only. */
-	if (format_type == CEDRUS_FORMAT_TYPE_PICTURE) {
-		cedrus_buffer->engine_buffer = kzalloc(engine->buffer_size,
-						       GFP_KERNEL);
-		if (!cedrus_buffer->engine_buffer)
-			return -ENOMEM;
+	cedrus_buffer->engine_buffer = kzalloc(buffer_size, GFP_KERNEL);
+	if (!cedrus_buffer->engine_buffer)
+		return -ENOMEM;
 
+	if (format_type == CEDRUS_FORMAT_TYPE_PICTURE) {
 		ret = cedrus_engine_buffer_setup(ctx, cedrus_buffer);
 		if (ret)
 			goto error_buffer;
@@ -459,12 +463,14 @@ static void cedrus_context_buffer_cleanup(struct vb2_buffer *vb2_buffer)
 	unsigned int format_type =
 		cedrus_proc_format_type(ctx->proc, vb2_buffer->type);
 
-	if (format_type == CEDRUS_FORMAT_TYPE_PICTURE &&
-	    cedrus_buffer->engine_buffer) {
+	if (!cedrus_buffer->engine_buffer)
+		return;
+
+	if (format_type == CEDRUS_FORMAT_TYPE_PICTURE)
 		cedrus_engine_buffer_cleanup(ctx, cedrus_buffer);
-		kfree(cedrus_buffer->engine_buffer);
-		cedrus_buffer->engine_buffer = NULL;
-	}
+
+	kfree(cedrus_buffer->engine_buffer);
+	cedrus_buffer->engine_buffer = NULL;
 }
 
 static int cedrus_context_buffer_prepare(struct vb2_buffer *vb2_buffer)
@@ -508,6 +514,22 @@ static int cedrus_context_buffer_validate(struct vb2_buffer *vb2_buffer)
 	v4l2_buffer->field = V4L2_FIELD_NONE;
 
 	return 0;
+}
+
+static void cedrus_context_buffer_finish(struct vb2_buffer *vb2_buffer)
+{
+	struct cedrus_context *ctx = vb2_get_drv_priv(vb2_buffer->vb2_queue);
+	struct cedrus_buffer *cedrus_buffer =
+		cedrus_buffer_from_vb2(vb2_buffer);
+	unsigned int format_type =
+		cedrus_proc_format_type(ctx->proc, vb2_buffer->type);
+
+	/*
+	 * Engine-coded output fixups run after vb2 has synchronized the DMA
+	 * buffer for CPU access and immediately before userspace dequeues it.
+	 */
+	if (format_type == CEDRUS_FORMAT_TYPE_CODED)
+		cedrus_engine_buffer_finish(ctx, cedrus_buffer);
 }
 
 static void cedrus_context_buffer_complete(struct vb2_buffer *vb2_buffer)
@@ -621,6 +643,7 @@ static const struct vb2_ops cedrus_context_queue_ops = {
 	.buf_prepare		= cedrus_context_buffer_prepare,
 	.buf_queue		= cedrus_context_buffer_queue,
 	.buf_out_validate	= cedrus_context_buffer_validate,
+	.buf_finish		= cedrus_context_buffer_finish,
 	.buf_request_complete	= cedrus_context_buffer_complete,
 	.start_streaming	= cedrus_context_start_streaming,
 	.stop_streaming		= cedrus_context_stop_streaming,

@@ -11,5 +11,6 @@ sunxi-cedrus-y = cedrus.o \
 		 cedrus_dec_vp9.o \
 		 cedrus_enc.o \
 		 cedrus_enc_h264.o \
+		 cedrus_enc_jpeg.o \
 		 cedrus_engine.o \
 		 cedrus_proc.o

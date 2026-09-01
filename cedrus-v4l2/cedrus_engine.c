@@ -108,6 +108,18 @@ int cedrus_engine_buffer_setup(struct cedrus_context *ctx,
 	return engine->ops->buffer_setup(ctx, buffer);
 }
 
+void cedrus_engine_buffer_finish(struct cedrus_context *ctx,
+				 struct cedrus_buffer *buffer)
+{
+	const struct cedrus_engine *engine = ctx->engine;
+
+	if (WARN_ON(!engine || !engine->ops))
+		return;
+
+	if (engine->ops->buffer_finish)
+		engine->ops->buffer_finish(ctx, buffer);
+}
+
 void cedrus_engine_buffer_cleanup(struct cedrus_context *ctx,
 				  struct cedrus_buffer *buffer)
 {

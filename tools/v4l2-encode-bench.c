@@ -98,12 +98,14 @@ int main(int argc, char **argv)
     struct mapped_buffer raw, coded;
     struct timespec start, end;
     unsigned int width, height, frames, raw_size, i, total = 0;
+	unsigned int jpeg_quality = 90;
+	unsigned int coded_format = V4L2_PIX_FMT_H264;
     FILE *output = NULL;
     int fd;
     double seconds;
 
-    if (argc != 5 && argc != 6) {
-        fprintf(stderr, "usage: %s /dev/videoN width height frames [output.h264]\n",
+    if (argc < 5 || argc > 8) {
+        fprintf(stderr, "usage: %s /dev/videoN width height frames [output] [h264|jpeg] [jpeg-quality]\n",
                 argv[0]);
         return 64;
     }
@@ -111,22 +113,40 @@ int main(int argc, char **argv)
     height = strtoul(argv[3], NULL, 0);
     frames = strtoul(argv[4], NULL, 0);
     if (!width || !height || !frames || (width & 1) || (height & 1)) return 64;
-    if (argc == 6) {
+    if (argc >= 6) {
         output = fopen(argv[5], "wb");
         if (!output) die("fopen output");
     }
+	if (argc >= 7) {
+		if (!strcmp(argv[6], "jpeg"))
+			coded_format = V4L2_PIX_FMT_JPEG;
+		else if (strcmp(argv[6], "h264")) {
+			fprintf(stderr, "unsupported coded format: %s\n", argv[6]);
+			return 64;
+		}
+	}
+	if (argc == 8) {
+		jpeg_quality = strtoul(argv[7], NULL, 0);
+		if (coded_format != V4L2_PIX_FMT_JPEG || jpeg_quality < 1 ||
+		    jpeg_quality > 100)
+			return 64;
+	}
     raw_size = width * height * 3 / 2;
     fd = open(argv[1], O_RDWR | O_NONBLOCK);
     if (fd < 0) die("open");
     set_format(fd, out_type, V4L2_PIX_FMT_NV12, width, height, raw_size);
-    set_format(fd, cap_type, V4L2_PIX_FMT_H264, width, height, 8 * 1024 * 1024);
-    set_control(fd, V4L2_CID_MPEG_VIDEO_H264_I_FRAME_QP, 20);
-    set_control(fd, V4L2_CID_MPEG_VIDEO_H264_P_FRAME_QP, 22);
-    set_control(fd, V4L2_CID_MPEG_VIDEO_H264_LEVEL,
-                V4L2_MPEG_VIDEO_H264_LEVEL_5_1);
+    set_format(fd, cap_type, coded_format, width, height, 8 * 1024 * 1024);
+    if (coded_format == V4L2_PIX_FMT_H264) {
+        set_control(fd, V4L2_CID_MPEG_VIDEO_H264_I_FRAME_QP, 20);
+        set_control(fd, V4L2_CID_MPEG_VIDEO_H264_P_FRAME_QP, 22);
+        set_control(fd, V4L2_CID_MPEG_VIDEO_H264_LEVEL,
+                    V4L2_MPEG_VIDEO_H264_LEVEL_5_1);
 #ifdef V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR
-    set_control(fd, V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR, 1);
+        set_control(fd, V4L2_CID_MPEG_VIDEO_PREPEND_SPSPPS_TO_IDR, 1);
 #endif
+    } else {
+        set_control(fd, V4L2_CID_JPEG_COMPRESSION_QUALITY, jpeg_quality);
+    }
     raw = request_one(fd, out_type);
     coded = request_one(fd, cap_type);
     if (raw.length < raw_size) { fprintf(stderr, "short raw mapping\n"); return 1; }
