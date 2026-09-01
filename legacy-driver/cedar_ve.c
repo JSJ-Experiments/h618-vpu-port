@@ -193,6 +193,7 @@ static bool snapshot_venc_regs;
 static u32 venc_snapshot_global[0x40];
 static u32 venc_snapshot_isp[0x40];
 static u32 venc_snapshot_avc[0x40];
+static u32 venc_snapshot_sram[0x80];
 static int venc_snapshot_state;
 /*S_IRUGO represent that g_dev_major can be read,but canot be write*/
 module_param(g_dev_major, int, 0444);
@@ -1449,6 +1450,17 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 			if (snapshot_venc_regs &&
 			    cmpxchg(&venc_snapshot_state, 1, 2) == 1) {
 				smp_rmb();
+				/* The H618 JPEG backend loads 128 quantization words
+				 * through the auto-incrementing AVC SRAM port.  Read them
+				 * only after completion, while the vendor caller still
+				 * sleeps in IOCTL_WAIT_VE_EN. */
+				for (i = 0; i < ARRAY_SIZE(venc_snapshot_sram); i++) {
+					writel(i, cedar_devp->iomap_addrs.regs_ve +
+					       0xb00 + 0xe0);
+					venc_snapshot_sram[i] =
+						readl(cedar_devp->iomap_addrs.regs_ve +
+						      0xb00 + 0xe4);
+				}
 				for (i = 0; i < ARRAY_SIZE(venc_snapshot_global); i += 4)
 					pr_info("H618VE G %03x: %08x %08x %08x %08x\n",
 						i * 4, venc_snapshot_global[i],
@@ -1467,6 +1479,12 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 						venc_snapshot_avc[i + 1],
 						venc_snapshot_avc[i + 2],
 						venc_snapshot_avc[i + 3]);
+				for (i = 0; i < ARRAY_SIZE(venc_snapshot_sram); i += 4)
+					pr_info("H618VE S %03x: %08x %08x %08x %08x\n",
+						i * 4, venc_snapshot_sram[i],
+						venc_snapshot_sram[i + 1],
+						venc_snapshot_sram[i + 2],
+						venc_snapshot_sram[i + 3]);
 			}
 
 			return cedar_devp->en_irq_value;

@@ -10,6 +10,10 @@ usage() { echo "usage: sudo $0 /path/to/sunxi_ve_legacy.ko -- command [args...]"
 module=$1
 shift 2
 [[ -r $module ]] || { echo "module not readable: $module" >&2; exit 66; }
+module_options=()
+if [[ -n ${LEGACY_VE_MODULE_OPTIONS:-} ]]; then
+  read -r -a module_options <<<"$LEGACY_VE_MODULE_OPTIONS"
+fi
 device=${CEDAR_PLATFORM_DEVICE:-1c0e000.video-codec}
 device_path=/sys/bus/platform/devices/$device
 [[ -e $device_path ]] || { echo "missing VE platform device: $device_path" >&2; exit 69; }
@@ -33,6 +37,6 @@ restore() {
 trap restore EXIT INT TERM
 
 echo "$device" > "/sys/bus/platform/drivers/$cedrus_driver/unbind"
-insmod "$module"
+insmod "$module" "${module_options[@]}"
 [[ -c /dev/cedar_dev ]] || { echo 'legacy module did not create /dev/cedar_dev' >&2; exit 71; }
 "$@"
