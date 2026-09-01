@@ -56,7 +56,9 @@
 #define VE_MODE_ENC_ISP_ENABLE			BIT(6)
 #define VE_MODE_DEC_DISABLED			(7 << 0)
 #define VE_MODE_DEC_H265			(4 << 0)
-#define VE_MODE_DEC_VP9				(5 << 0)
+/* The CedarX API calls VP9 engine 5, but the H618 top-level hardware mode
+ * remains 4 (the shared H.265/VP9 register block at +0x500). */
+#define VE_MODE_DEC_VP9				VE_MODE_DEC_H265
 #define VE_MODE_DEC_H264			(1 << 0)
 #define VE_MODE_DEC_MPEG			(0 << 0)
 
@@ -111,6 +113,18 @@
 #define VE_DEC_VP9_SRAM_OFFSET			(VE_ENGINE_DEC_VP9 + 0xe0)
 #define VE_DEC_VP9_SRAM_DATA			(VE_ENGINE_DEC_VP9 + 0xe4)
 #define VE_DEC_VP9_STD_BIT_OFFSET		(VE_ENGINE_DEC_VP9 + 0xf0)
+
+#define VE_DEC_VP9_BITS_ADDR_FIRST_FRAME	BIT(30)
+#define VE_DEC_VP9_BITS_ADDR_LAST_FRAME		BIT(29)
+#define VE_DEC_VP9_BITS_ADDR_VALID_DATA		BIT(28)
+#define VE_DEC_VP9_BITS_ADDR_BASE(a)		(((a) >> 8) & GENMASK(27, 0))
+#define VE_DEC_VP9_BITS_END_ADDR_BASE(a)		(((a) >> 8) & GENMASK(29, 2))
+#define VE_DEC_VP9_DMA_ADDR_BASE(a)		((a) >> 8)
+#define VE_DEC_VP9_FUNC_CTRL_IRQ_MASK		GENMASK(2, 0)
+#define VE_DEC_VP9_TRIGGER_PROBS			7
+#define VE_DEC_VP9_TRIGGER_FRAME		8
+#define VE_DEC_VP9_STATUS_SUCCESS		BIT(0)
+#define VE_DEC_VP9_STATUS_ERROR_MASK		GENMASK(2, 1)
 
 
 #define VE_RESET_REG				0x4

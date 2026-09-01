@@ -18,6 +18,7 @@
 #include "cedrus_dec_h264.h"
 #include "cedrus_dec_h265.h"
 #include "cedrus_dec_vp8.h"
+#include "cedrus_dec_vp9.h"
 #include "cedrus_engine.h"
 #include "cedrus_proc.h"
 #include "cedrus_regs.h"
@@ -312,6 +313,7 @@ static const struct cedrus_engine *cedrus_dec_engines[] = {
 	&cedrus_dec_h264,
 	&cedrus_dec_h265,
 	&cedrus_dec_vp8,
+	&cedrus_dec_vp9,
 };
 
 /* Decoder */

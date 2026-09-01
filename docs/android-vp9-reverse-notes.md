@@ -23,15 +23,17 @@ The VP9 register names and offsets confirm that H618 reuses the block at VE
 offset `0x500`, with VP9-specific semantics. The recovered map is now recorded
 in `cedrus_regs.h`. Vendor allocation routines additionally establish two
 fixed working areas of `0x88000` and `0x1f4000` bytes and two segment maps of
-32 bytes per 64x64 superblock; the native context skeleton records these
-requirements without advertising incomplete VP9 support.
+32 bytes per 64x64 superblock.  The HAL's probability builder was reversed
+into a dynamic V4L2-frame-context packer.  CedarX issues trigger command 7 to
+prime that image before command 8 starts the frame; omitting the first command
+caused valid-looking completion with incorrect pixels.
 
-This proves H618 VP9 belongs in the shared VE driver and can coexist with the
-other Cedrus engines. It is not a separately mapped Hantro block. The next
-native implementation step is to map the remaining `libawvp9HwAL.so` register
-writes to `V4L2_PIX_FMT_VP9_FRAME` plus the standardized
+H618 VP9 therefore belongs in the shared VE driver and can coexist with the
+other Cedrus engines; it is not a separately mapped Hantro block.  The native
+key-frame path uses `V4L2_PIX_FMT_VP9_FRAME` plus the standardized
 `V4L2_CID_STATELESS_VP9_FRAME` and
-`V4L2_CID_STATELESS_VP9_COMPRESSED_HDR` request controls.
+`V4L2_CID_STATELESS_VP9_COMPRESSED_HDR` request controls.  Inter-frame state
+and the remaining profiles are still under implementation.
 
 AVS2 also uses the CedarX VE callback table, but Linux 6.1 has no standardized
 stateless AVS2 request controls. Its native interface will therefore require

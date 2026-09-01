@@ -574,6 +574,7 @@ static const struct cedrus_variant cedrus_variant_sun50i_h616 = {
 			  CEDRUS_CAPABILITY_H264_DEC |
 			  CEDRUS_CAPABILITY_H265_DEC |
 			  CEDRUS_CAPABILITY_VP8_DEC |
+			  CEDRUS_CAPABILITY_VP9_DEC |
 			  CEDRUS_CAPABILITY_H264_ENC |
 			  CEDRUS_CAPABILITY_JPEG_ENC,
 	.clock_mod_rate	= 696000000,
