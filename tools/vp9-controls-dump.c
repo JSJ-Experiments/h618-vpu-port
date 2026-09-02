@@ -283,7 +283,7 @@ int main(int argc, char **argv)
 		printf("frame=%u bytes=%u type=%s size=%ux%u uhdr=%u chdr=%u "
 		       "q=%u lf=%u tx=%u refs=%" PRIu64 ",%" PRIu64 ",%" PRIu64
 		       " refresh=%02x flags=%08x ctx=%u reset=%u interp=%u refmode=%u "
-		       "refidx=%u,%u,%u sign=%x\n",
+		       "refidx=%u,%u,%u sign=%x tiles=%u,%u seg=%02x\n",
 		       index, size, h.frame_type == GST_VP9_KEY_FRAME ? "key" : "inter",
 		       h.width, h.height, h.frame_header_length_in_bytes,
 		       h.header_size_in_bytes, h.quantization_params.base_q_idx,
@@ -294,7 +294,8 @@ int main(int argc, char **argv)
 		       h.refresh_frame_flags, frame.flags, h.frame_context_idx,
 		       h.reset_frame_context, h.interpolation_filter,
 		       h.reference_mode, h.ref_frame_idx[0], h.ref_frame_idx[1],
-		       h.ref_frame_idx[2], frame.ref_frame_sign_bias);
+		       h.ref_frame_idx[2], frame.ref_frame_sign_bias,
+		       h.tile_cols_log2, h.tile_rows_log2, frame.seg.flags);
 		if (write_blob(prefix, index, "vp9", data, size) ||
 		    write_blob(prefix, index, "frame", &frame, sizeof(frame)) ||
 		    write_blob(prefix, index, "probs", &probs, sizeof(probs))) {

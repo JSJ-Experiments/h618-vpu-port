@@ -14,3 +14,11 @@ between different aspects:
 This will make it possible to register two different procs (decoder and
 encoder) while sharing significant common infrastructure, common v4l2 and m2m
 devices but exposing distinct video devices.
+
+Deferred codec work
+-------------------
+
+- AVS/AVS2 decode is intentionally out of scope for the current implementation.
+  Revisit it after the H.264/HEVC/VP8/VP9/JPEG paths are complete and stable.
+  Linux 6.1 has no standardized stateless AVS2 request controls, so this will
+  also require selecting or designing an appropriate userspace API.

@@ -47,6 +47,14 @@ capture stride propagation was corrected so a stale 1280-pixel default cannot
 leak into a 320-pixel sequence.  GStreamer regression runs remain byte-exact
 to the recorded hardware outputs for H.264, HEVC, VP8 and MPEG-2.
 
+Backward probability adaptation is also implemented for non-frame-parallel
+VP9.  The H618's `0x3398`-byte symbol-count image is translated into the
+standard V4L2 VP9 count interface, including its non-linear motion-vector
+layout, before the kernel VP9 helpers refresh the selected frame context.  A
+12-frame 640x360 adaptive key/P sequence produces the same probability-image
+CRC on every frame as the Android vendor decoder and is byte-identical to its
+FFmpeg software reference over all 4,147,200 output bytes.
+
 The module is currently validated as a guarded replacement: remove distro
 `sunxi_cedrus`, load its V4L2/VB2 dependencies and the experimental module,
 run the test, then unload it and restore distro `sunxi_cedrus`. The test helper
@@ -65,9 +73,9 @@ own the VE concurrently.
 
 ## Remaining scope
 
-* Finish VP9 reference scaling, backward probability adaptation, segmentation,
-  tile rows, and profile/10-bit coverage.  AVS2 still requires
-  a new codec engine and a suitable userspace API rather than mere format
-  advertisement.
+* Finish VP9 reference scaling, segmentation, tile rows, and profile/10-bit
+  coverage.
+* AVS/AVS2 is intentionally deferred. It requires a new codec engine and a
+  suitable userspace API rather than mere format advertisement.
 * Package the native module for persistent boot and validate decode/encode
   coexistence under normal applications.

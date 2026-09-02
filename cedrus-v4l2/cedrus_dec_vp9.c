@@ -9,6 +9,7 @@
  */
 
 #include <linux/dma-mapping.h>
+#include <linux/crc32.h>
 #include <linux/errno.h>
 #include <linux/module.h>
 #include <linux/overflow.h>
@@ -32,6 +33,11 @@ static bool debug_vp9_regs;
 module_param(debug_vp9_regs, bool, 0644);
 MODULE_PARM_DESC(debug_vp9_regs,
 		 "log the H618 VP9 register configuration before each trigger");
+
+static bool debug_vp9_probs;
+module_param(debug_vp9_probs, bool, 0644);
+MODULE_PARM_DESC(debug_vp9_probs,
+		 "log CRC32s of the H618 VP9 probability and count images");
 
 static void cedrus_vp9_pack_word(u8 **dst, const u8 *src, size_t size)
 {
@@ -271,6 +277,52 @@ static int cedrus_dec_vp9_mv_col_size(unsigned int width, unsigned int height,
 	return 0;
 }
 
+static void cedrus_dec_vp9_init_counts(struct cedrus_dec_vp9_context *vp9)
+{
+	struct cedrus_vp9_frame_counts *hw =
+		vp9->prob_count + CEDRUS_DEC_VP9_COUNTS_OFFSET;
+	struct v4l2_vp9_frame_symbol_counts *counts = &vp9->counts;
+	unsigned int i, j, k, l, m;
+
+	static_assert(sizeof(*hw) == 0x3398);
+
+	counts->partition = &hw->partition;
+	counts->skip = &hw->skip;
+	counts->intra_inter = &hw->intra_inter;
+	counts->tx32p = &hw->tx32p;
+	counts->tx16p = &vp9->tx16p;
+	counts->tx8p = &hw->tx8p;
+	counts->y_mode = &hw->y_mode;
+	counts->uv_mode = &hw->uv_mode;
+	counts->comp = &hw->comp_inter;
+	counts->comp_ref = &hw->comp_ref;
+	counts->single_ref = &hw->single_ref;
+	counts->mv_mode = &hw->inter_mode;
+	counts->filter = &hw->switchable_interp;
+	counts->mv_joint = &hw->mv_joint;
+	counts->sign = &vp9->mv_counts.sign;
+	counts->classes = &vp9->mv_counts.classes;
+	counts->class0 = &vp9->mv_counts.class0;
+	counts->bits = &vp9->mv_counts.bits;
+	counts->class0_fp = &vp9->mv_counts.class0_fp;
+	counts->fp = &vp9->mv_counts.fp;
+	counts->class0_hp = &vp9->mv_counts.class0_hp;
+	counts->hp = &vp9->mv_counts.hp;
+
+	for (i = 0; i < ARRAY_SIZE(counts->coeff); i++)
+		for (j = 0; j < ARRAY_SIZE(counts->coeff[0]); j++)
+			for (k = 0; k < ARRAY_SIZE(counts->coeff[0][0]); k++)
+				for (l = 0; l < ARRAY_SIZE(counts->coeff[0][0][0]); l++)
+					for (m = 0; m < ARRAY_SIZE(counts->coeff[0][0][0][0]); m++) {
+						counts->coeff[i][j][k][l][m] =
+							(u32 (*)[3])&hw->coeff[i][j][k][l][m][0];
+						counts->eob[i][j][k][l][m][0] =
+							&hw->eob_branch[i][j][k][l][m];
+						counts->eob[i][j][k][l][m][1] =
+							&hw->coeff[i][j][k][l][m][3];
+					}
+}
+
 static void cedrus_dec_vp9_cleanup(struct cedrus_context *ctx)
 {
 	struct cedrus_dec_vp9_context *vp9 = ctx->engine_ctx;
@@ -361,6 +413,7 @@ static int cedrus_dec_vp9_setup(struct cedrus_context *ctx)
 		memset(vp9->segment_map[i], 0, vp9->segment_map_size);
 	for (i = 0; i < ARRAY_SIZE(vp9->frame_context); i++)
 		vp9->frame_context[i] = cedrus_vp9_default_probs;
+	cedrus_dec_vp9_init_counts(vp9);
 
 	return 0;
 
@@ -524,6 +577,10 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 	cedrus_vp9_pack_probs((u8 *)vp9->prob_count +
 			      CEDRUS_DEC_VP9_PROBS_OFFSET,
 			      &vp9->probability_tables);
+	if (debug_vp9_probs)
+		dev_info(dev->dev, "VP9 probability input CRC32 %08x\n",
+			 crc32_le(~0, vp9->prob_count + CEDRUS_DEC_VP9_PROBS_OFFSET,
+				  CEDRUS_DEC_VP9_PROBS_SIZE) ^ ~0);
 	/*
 	 * The first tile is described by TILE_START/TILE_END.  CedarX places one
 	 * four-word geometry record for every remaining tile at the start of the
@@ -553,6 +610,8 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 		  ((frame->flags & V4L2_VP9_FRAME_FLAG_ALLOW_HIGH_PREC_MV) ?
 		   BIT(11) : 0) |
 		  (use_previous_mvs ? BIT(25) : 0))) |
+		(!(frame->flags & V4L2_VP9_FRAME_FLAG_PARALLEL_DEC_MODE) ?
+		 BIT(27) : 0) |
 		(tile_cols > 1 ? BIT(0) : 0) |
 		(job->compressed_hdr->tx_mode << 20);
 	cedrus_write(dev, VE_DEC_VP9_HDR_SYNC, value);
@@ -694,9 +753,121 @@ static void cedrus_dec_vp9_job_finish(struct cedrus_context *ctx, int state)
 	struct cedrus_dec_vp9_buffer *buffer = cedrus_job_engine_buffer(ctx);
 	const struct v4l2_ctrl_vp9_frame *frame =
 		((struct cedrus_dec_vp9_job *)ctx->engine_job)->frame;
+	const struct v4l2_ctrl_vp9_compressed_hdr *compressed_hdr =
+		((struct cedrus_dec_vp9_job *)ctx->engine_job)->compressed_hdr;
+	struct cedrus_vp9_frame_counts *hw =
+		vp9->prob_count + CEDRUS_DEC_VP9_COUNTS_OFFSET;
+	bool frame_is_intra, use_128;
+	unsigned int i;
 
 	if (state != VB2_BUF_STATE_DONE)
 		return;
+	frame_is_intra = frame->flags & (V4L2_VP9_FRAME_FLAG_KEY_FRAME |
+					       V4L2_VP9_FRAME_FLAG_INTRA_ONLY);
+	use_128 = !vp9->previous_valid || vp9->previous_key_frame;
+
+	if (frame->flags & V4L2_VP9_FRAME_FLAG_REFRESH_FRAME_CTX) {
+		if (frame->flags & V4L2_VP9_FRAME_FLAG_PARALLEL_DEC_MODE) {
+			vp9->frame_context[vp9->frame_context_idx] =
+				vp9->probability_tables;
+		} else {
+			struct {
+				u8 tx8[2][1];
+				u8 tx16[2][2];
+				u8 tx32[2][3];
+				u8 skip[3];
+			} tx_skip;
+
+			/*
+			 * Coherent DMA counters become visible after the successful
+			 * IRQ.
+			 */
+			dma_rmb();
+			if (debug_vp9_probs)
+				dev_info(ctx->proc->dev->dev,
+					 "VP9 completed probability CRC32 %08x counts %08x\n",
+					 crc32_le(~0, vp9->prob_count +
+						  CEDRUS_DEC_VP9_PROBS_OFFSET,
+						  CEDRUS_DEC_VP9_PROBS_SIZE) ^ ~0,
+					 crc32_le(~0, (u8 *)hw, sizeof(*hw)) ^ ~0);
+			memset(vp9->tx16p, 0, sizeof(vp9->tx16p));
+			for (i = 0; i < ARRAY_SIZE(vp9->tx16p); i++)
+				memcpy(vp9->tx16p[i], hw->tx16p[i],
+				       sizeof(hw->tx16p[i]));
+			memcpy(vp9->mv_counts.sign[0], hw->mv_sign_0,
+			       sizeof(hw->mv_sign_0));
+			memcpy(vp9->mv_counts.sign[1], hw->mv_sign_1,
+			       sizeof(hw->mv_sign_1));
+			memcpy(vp9->mv_counts.classes[0], hw->mv_classes_0,
+			       sizeof(hw->mv_classes_0));
+			memcpy(vp9->mv_counts.classes[1], hw->mv_classes_1,
+			       sizeof(hw->mv_classes_1));
+			memcpy(vp9->mv_counts.class0[0], hw->mv_class0_0,
+			       sizeof(hw->mv_class0_0));
+			memcpy(vp9->mv_counts.class0[1], hw->mv_class0_1,
+			       sizeof(hw->mv_class0_1));
+			memcpy(vp9->mv_counts.bits[0], hw->mv_bits_0,
+			       sizeof(hw->mv_bits_0));
+			memcpy(vp9->mv_counts.bits[1], hw->mv_bits_1,
+			       sizeof(hw->mv_bits_1));
+			memcpy(vp9->mv_counts.class0_fp[0], hw->mv_class0_fp_0,
+			       sizeof(hw->mv_class0_fp_0));
+			memcpy(vp9->mv_counts.class0_fp[1], hw->mv_class0_fp_1,
+			       sizeof(hw->mv_class0_fp_1));
+			memcpy(vp9->mv_counts.fp[0], hw->mv_fp_0,
+			       sizeof(hw->mv_fp_0));
+			memcpy(vp9->mv_counts.fp[1], hw->mv_fp_1,
+			       sizeof(hw->mv_fp_1));
+			memcpy(vp9->mv_counts.class0_hp[0], hw->mv_class0_hp_0,
+			       sizeof(hw->mv_class0_hp_0));
+			memcpy(vp9->mv_counts.class0_hp[1], hw->mv_class0_hp_1,
+			       sizeof(hw->mv_class0_hp_1));
+			memcpy(vp9->mv_counts.hp[0], hw->mv_hp_0,
+			       sizeof(hw->mv_hp_0));
+			memcpy(vp9->mv_counts.hp[1], hw->mv_hp_1,
+			       sizeof(hw->mv_hp_1));
+
+			/*
+			 * VP9 6.1.2: load_probs(), retaining only intra TX/skip
+			 * forward updates before applying the backward counts.
+			 */
+			if (frame_is_intra) {
+				memcpy(tx_skip.tx8, vp9->probability_tables.tx8,
+				       sizeof(tx_skip.tx8));
+				memcpy(tx_skip.tx16, vp9->probability_tables.tx16,
+				       sizeof(tx_skip.tx16));
+				memcpy(tx_skip.tx32, vp9->probability_tables.tx32,
+				       sizeof(tx_skip.tx32));
+				memcpy(tx_skip.skip, vp9->probability_tables.skip,
+				       sizeof(tx_skip.skip));
+			}
+			vp9->probability_tables =
+				vp9->frame_context[vp9->frame_context_idx];
+			if (frame_is_intra) {
+				memcpy(vp9->probability_tables.tx8, tx_skip.tx8,
+				       sizeof(tx_skip.tx8));
+				memcpy(vp9->probability_tables.tx16, tx_skip.tx16,
+				       sizeof(tx_skip.tx16));
+				memcpy(vp9->probability_tables.tx32, tx_skip.tx32,
+				       sizeof(tx_skip.tx32));
+				memcpy(vp9->probability_tables.skip, tx_skip.skip,
+				       sizeof(tx_skip.skip));
+			}
+
+			cedrus_vp9_adapt_coef_probs(&vp9->probability_tables,
+						      &vp9->counts, use_128,
+						      frame_is_intra);
+			if (!frame_is_intra)
+				cedrus_vp9_adapt_noncoef_probs(
+					&vp9->probability_tables, &vp9->counts,
+					frame->reference_mode,
+					frame->interpolation_filter,
+					compressed_hdr->tx_mode, frame->flags);
+			vp9->frame_context[vp9->frame_context_idx] =
+				vp9->probability_tables;
+		}
+	}
+
 	buffer->width = frame->frame_width_minus_1 + 1;
 	buffer->height = frame->frame_height_minus_1 + 1;
 	buffer->valid = true;
@@ -708,13 +879,8 @@ static void cedrus_dec_vp9_job_finish(struct cedrus_context *ctx, int state)
 	vp9->previous_intra_only =
 		frame->flags & (V4L2_VP9_FRAME_FLAG_KEY_FRAME |
 				V4L2_VP9_FRAME_FLAG_INTRA_ONLY);
-	if (!(frame->flags & V4L2_VP9_FRAME_FLAG_REFRESH_FRAME_CTX))
-		return;
-
-	/* Parallel mode has no backward probability adaptation. */
-	if (frame->flags & V4L2_VP9_FRAME_FLAG_PARALLEL_DEC_MODE)
-		vp9->frame_context[vp9->frame_context_idx] =
-			vp9->probability_tables;
+	vp9->previous_key_frame =
+		frame->flags & V4L2_VP9_FRAME_FLAG_KEY_FRAME;
 }
 
 static int cedrus_dec_vp9_irq_status(struct cedrus_context *ctx)

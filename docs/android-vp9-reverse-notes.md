@@ -39,12 +39,28 @@ clear for the first inter frame after a key frame and set for the next inter
 frame.  CedarX uses one persistent page-aligned motion-vector workspace for
 the sequence rather than one allocation per reference picture.
 
+Non-frame-parallel streams set header-sync bit 27, which makes the engine emit
+the `0x3398`-byte backward-adaptation count image at auxiliary-buffer offset
+`0x4b00`.  Disassembly of `vp9_update_counts`, `Vp9AdaptCoefProbs`,
+`Vp9AdaptModeProbs`, and `Vp9AdaptNmvProbs` recovered the hardware ordering.
+Coefficient and ordinary mode counts are mostly contiguous; motion-vector
+counts are split and reordered by component and field.  The native driver
+normalizes that layout and uses the common V4L2 VP9 probability helpers.  On a
+12-frame 640x360 adaptive stream, its packed probability CRCs match the vendor
+decoder frame-for-frame and its decoded NV12 is byte-identical to FFmpeg.
+
+`android-bridge/vp9-counts-oracle` calls the vendor library's pure
+`VP9GetCounts()` export against a captured count image.  It is retained only as
+a reverse-engineering cross-check; the native decode path neither loads nor
+ships the Android library.
+
 `tools/vp9-controls-dump` uses GStreamer's stateful VP9 parser to turn an IVF
 stream into the exact standardized frame and compressed-header controls used
 by `tools/vp9-request-sequence`.  This keeps the native validation path
 independent of the proprietary parser.
 
-AVS2 also uses the CedarX VE callback table, but Linux 6.1 has no standardized
+AVS2 is deferred for the current implementation. It also uses the CedarX VE
+callback table, but Linux 6.1 has no standardized
 stateless AVS2 request controls. Its native interface will therefore require
 either a new private request control pending an upstream API, or a userspace
 translation layer; advertising an unimplemented compressed format would be
