@@ -25,6 +25,25 @@ typedef int (*submit_stream_fn)(VideoDecoder *, void *, int);
 typedef int (*decode_fn)(VideoDecoder *, int, int, int, long long);
 typedef void *(*request_picture_fn)(VideoDecoder *, int);
 typedef int (*return_picture_fn)(VideoDecoder *, void *);
+typedef void (*dump_all_fn)(void);
+typedef void (*dump_all_tagged_fn)(const char *);
+
+static void dump_memadapter_buffers(const char *tag)
+{
+ void *memadapter;
+ dump_all_fn dump_all = NULL;
+ dump_all_tagged_fn dump_all_tagged = NULL;
+
+ memadapter=dlopen("libMemAdapter.so",RTLD_NOW|RTLD_NOLOAD);
+ if(!memadapter) memadapter=dlopen("libMemAdapter.so",RTLD_NOW|RTLD_LOCAL);
+ if(!memadapter){fprintf(stderr,"MemAdapter dump dlopen: %s\n",dlerror());return;}
+ *(void **)(&dump_all_tagged)=dlsym(memadapter,"MemAdapterDumpAllTagged");
+ *(void **)(&dump_all)=dlsym(memadapter,"MemAdapterDumpAll");
+ if(dump_all_tagged) dump_all_tagged(tag);
+ else if(dump_all) dump_all();
+ else fprintf(stderr,"MemAdapterDumpAll unavailable\n");
+ dlclose(memadapter);
+}
 int main(int argc, char **argv) {
  int codec = 0x115, width = 320, height = 240;
  void *lib; VideoDecoder *d; VideoStreamInfo s; VConfig c; FILE *f; long n; char *src, *a, *b; int as, bs, rc, i;
@@ -37,8 +56,14 @@ int main(int argc, char **argv) {
  if(!add_plugins||!create||!destroy||!init||!request_stream||!submit_stream||!decode||!request_picture||!return_picture){fprintf(stderr,"missing decoder API\n");return 2;}
  add_plugins(); memset(&s,0,sizeof(s)); memset(&c,0,sizeof(c)); s.eCodecFormat=codec; s.nWidth=width; s.nHeight=height; s.nFrameRate=30; s.nFrameDuration=33333; s.bIsFramePackage=0; c.eOutputPixelFormat=6; c.nVbvBufferSize=2*1024*1024; c.nFrameBufferNum=4;
  d=create(); if(!d){fprintf(stderr,"create failed\n");return 3;} rc=init(d,&s,&c); if(rc){fprintf(stderr,"InitializeVideoDecoder rc=%d\n",rc);destroy(d);return 4;}
+ if(getenv("CEDAR_VENDOR_LOG_LEVEL")) {
+  int *level=(int *)dlsym(RTLD_DEFAULT,"GLOBAL_LOG_LEVEL");
+  if(level) *level=atoi(getenv("CEDAR_VENDOR_LOG_LEVEL"));
+  else fprintf(stderr,"GLOBAL_LOG_LEVEL unavailable\n");
+ }
  a=b=NULL; as=bs=0; rc=request_stream(d,(int)n,&a,&as,&b,&bs,0); if(rc || as+bs<n){fprintf(stderr,"RequestVideoStreamBuffer rc=%d sizes=%d+%d\n",rc,as,bs);destroy(d);return 5;} if(as>=n) memcpy(a,src,(size_t)n); else {memcpy(a,src,(size_t)as);memcpy(b,src+as,(size_t)(n-as));}
  { struct { char *pData; int nLength; long long nPts; long long nPcr; int bIsFirstPart,bIsLastPart,nID,nStreamIndex,bValid; unsigned int bVideoInfoFlag; void *pVideoInfo; } data; memset(&data,0,sizeof(data)); data.pData=a; data.nLength=(int)n; data.nPts=0; data.nPcr=-1; data.bIsFirstPart=1; data.bIsLastPart=1; data.bValid=1; if(submit_stream(d,&data,0)){fprintf(stderr,"SubmitVideoStreamData failed\n");destroy(d);return 6;} }
- for(i=0;i<300;i++){ void *pic; rc=decode(d,i>20,0,0,0); pic=request_picture(d,0); if(pic){return_picture(d,pic); printf("Android CedarX hardware decode OK (codec=0x%x result=%d)\n", codec, rc);destroy(d);free(src);return 0;} usleep(10000); }
+ dump_memadapter_buffers("pre");
+ for(i=0;i<300;i++){ void *pic; rc=decode(d,i>20,0,0,0); if(i==0 && getenv("CEDAR_DUMP_AFTER_FIRST_DECODE")) dump_memadapter_buffers("after-decode"); pic=request_picture(d,0); if(pic){dump_memadapter_buffers("post");return_picture(d,pic); printf("Android CedarX hardware decode OK (codec=0x%x result=%d)\n", codec, rc);destroy(d);free(src);return 0;} usleep(10000); }
  fprintf(stderr,"no decoded picture\n");destroy(d);free(src);return 7;
 }

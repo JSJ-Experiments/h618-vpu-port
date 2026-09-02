@@ -195,12 +195,35 @@ static u32 venc_snapshot_isp[0x40];
 static u32 venc_snapshot_avc[0x40];
 static u32 venc_snapshot_sram[0x80];
 static int venc_snapshot_state;
+/* VP9 shares the H.265 decoder register group at +0x500.  Capture the first
+ * completed job before CedarX acknowledges or reprograms the block. */
+static bool snapshot_vp9_regs;
+static unsigned int snapshot_vp9_skip;
+static unsigned int vp9_jobs_seen;
+static u32 vp9_snapshot_global[0x40];
+/* Stop before the SRAM address/data ports at 0xe0/0xe4.  Reading the data
+ * port while a timed-out engine is active stalls the VE interconnect. */
+static u32 vp9_snapshot_regs[0x38];
+static u32 vp9_snapshot_pre_global[0x40];
+static u32 vp9_snapshot_pre_regs[0x38];
+static u32 vp9_snapshot_sram_dequant[16];
+static u32 vp9_snapshot_sram_loop_filter[16];
+static u32 vp9_snapshot_pre_std_bitoffset;
+static u32 vp9_snapshot_std_bitoffset;
+static int vp9_snapshot_pre_state;
+static int vp9_snapshot_state;
 /*S_IRUGO represent that g_dev_major can be read,but canot be write*/
 module_param(g_dev_major, int, 0444);
 module_param(g_dev_minor, int, 0444);
 module_param(snapshot_venc_regs, bool, 0444);
 MODULE_PARM_DESC(snapshot_venc_regs,
 		 "capture VE global and AVC register banks on the first encoder IRQ");
+module_param(snapshot_vp9_regs, bool, 0444);
+MODULE_PARM_DESC(snapshot_vp9_regs,
+		 "capture VE global, VP9, and VP9 SRAM banks on the first decoder IRQ");
+module_param(snapshot_vp9_skip, uint, 0444);
+MODULE_PARM_DESC(snapshot_vp9_skip,
+		 "number of VP9 decoder waits to skip before capturing one job");
 
 struct iomap_para {
 	volatile char *regs_ve;
@@ -277,11 +300,15 @@ struct ve_info { /* each object will bind a new file handler */
 
 struct cedar_coherent_buf {
 	struct list_head list;
+	struct list_head global_list;
 	u32 handle;
 	size_t size;
 	void *cpu_addr;
 	dma_addr_t dma_addr;
 };
+
+static LIST_HEAD(cedar_coherent_buffers_global);
+static DEFINE_MUTEX(cedar_coherent_buffers_global_lock);
 
 struct user_iommu_param {
 	int				fd;
@@ -341,6 +368,9 @@ static void free_coherent_buffers(struct ve_info *info)
 
 	list_for_each_entry_safe(buffer, next, &info->coherent_buffers, list) {
 		list_del(&buffer->list);
+		mutex_lock(&cedar_coherent_buffers_global_lock);
+		list_del(&buffer->global_list);
+		mutex_unlock(&cedar_coherent_buffers_global_lock);
 		dma_free_coherent(cedar_devp->plat_dev, buffer->size,
 				  buffer->cpu_addr, buffer->dma_addr);
 		kfree(buffer);
@@ -378,6 +408,41 @@ static struct cedar_coherent_buf *find_coherent_buffer(struct ve_info *info,
 		if (buffer->handle == handle)
 			return buffer;
 	return NULL;
+}
+
+static void vp9_log_dma_chunks(const char *phase, dma_addr_t address)
+{
+	struct cedar_coherent_buf *buffer;
+	size_t offset, length, i;
+	unsigned int total = 0;
+
+	mutex_lock(&cedar_coherent_buffers_global_lock);
+	list_for_each_entry(buffer, &cedar_coherent_buffers_global, global_list) {
+		if (address < buffer->dma_addr ||
+		    address >= buffer->dma_addr + buffer->size)
+			continue;
+
+		offset = address - buffer->dma_addr;
+		length = min_t(size_t, 0x88000, buffer->size - offset);
+		for (i = 0; i < length; i += 0x1000) {
+			size_t j, chunk = min_t(size_t, 0x1000, length - i);
+			unsigned int nonzero = 0;
+			u8 *data = buffer->cpu_addr + offset + i;
+
+			for (j = 0; j < chunk; j++)
+				nonzero += data[j] != 0;
+			if (nonzero)
+				pr_info("H618VP9 %s-DMA +%05zx nonzero=%u\n",
+					phase, i, nonzero);
+			total += nonzero;
+		}
+		pr_info("H618VP9 %s-DMA addr=%pad bytes=%zu nonzero=%u\n",
+			phase, &address, length, total);
+		mutex_unlock(&cedar_coherent_buffers_global_lock);
+		return;
+	}
+	mutex_unlock(&cedar_coherent_buffers_global_lock);
+	pr_info("H618VP9 %s-DMA addr=%pad not-found\n", phase, &address);
 }
 
 static irqreturn_t VideoEngineInterupt(int irq, void *dev)
@@ -539,6 +604,7 @@ static irqreturn_t VideoEngineInterupt(int irq, void *dev)
 			interrupt_enable = readl((void *)ve_int_ctrl_reg) & (0xf);
 			break;
 		case 4: /*hevc*/
+		case 5: /*vp9: same physical decoder group, VP9 register semantics*/
 			ve_int_status_reg = (unsigned long)
 				(addrs.regs_ve + 0x500 + 0x38);
 			ve_int_ctrl_reg = (unsigned long)(addrs.regs_ve + 0x500 + 0x30);
@@ -561,6 +627,23 @@ static irqreturn_t VideoEngineInterupt(int irq, void *dev)
 
 		/*modify by fangning 2013-05-22*/
 		if ((status&0xf) && interrupt_enable) {
+			if ((modual_sel == 4 || modual_sel == 5) &&
+			    snapshot_vp9_regs &&
+			    READ_ONCE(vp9_snapshot_pre_state) == 1 &&
+			    !READ_ONCE(vp9_snapshot_state)) {
+				pr_info("H618VP9 module-select=%u status=%08x enable=%08x\n",
+					modual_sel, status, interrupt_enable);
+				for (i = 0; i < ARRAY_SIZE(vp9_snapshot_global); i++)
+					vp9_snapshot_global[i] =
+						readl(addrs.regs_ve + i * sizeof(u32));
+				for (i = 0; i < ARRAY_SIZE(vp9_snapshot_regs); i++)
+					vp9_snapshot_regs[i] =
+						readl(addrs.regs_ve + 0x500 + i * sizeof(u32));
+				vp9_snapshot_std_bitoffset =
+					readl(addrs.regs_ve + 0x500 + 0xf0);
+				smp_wmb();
+				WRITE_ONCE(vp9_snapshot_state, 1);
+			}
 			/*disable interrupt*/
 			if (modual_sel == 0) {
 				val = readl((void *)ve_int_ctrl_reg);
@@ -1422,8 +1505,38 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 			}
 			break;
 		case IOCTL_WAIT_VE_DE:
+		{
+			dma_addr_t vp9_aux_dma = 0;
+
 			ve_timeout = (int)arg;
 			cedar_devp->de_irq_value = 0;
+			/* CedarX enters WAIT_VE_DE immediately after the two VP9
+			 * trigger writes.  Capture the normal register windows here,
+			 * before the hardware advances its bitstream counters.  Never
+			 * touch the SRAM data port from this path. */
+			if (snapshot_vp9_regs &&
+			    !READ_ONCE(vp9_snapshot_pre_state) &&
+			    ((readl(cedar_devp->iomap_addrs.regs_ve) & 0xf) == 4 ||
+			     (readl(cedar_devp->iomap_addrs.regs_ve) & 0xf) == 5) &&
+			    vp9_jobs_seen++ == snapshot_vp9_skip) {
+				for (i = 0; i < ARRAY_SIZE(vp9_snapshot_pre_global); i++)
+					vp9_snapshot_pre_global[i] =
+						readl(cedar_devp->iomap_addrs.regs_ve +
+						      i * sizeof(u32));
+				for (i = 0; i < ARRAY_SIZE(vp9_snapshot_pre_regs); i++)
+					vp9_snapshot_pre_regs[i] =
+						readl(cedar_devp->iomap_addrs.regs_ve +
+						      0x500 + i * sizeof(u32));
+				vp9_snapshot_pre_std_bitoffset =
+					readl(cedar_devp->iomap_addrs.regs_ve +
+					      0x500 + 0xf0);
+				smp_wmb();
+				WRITE_ONCE(vp9_snapshot_pre_state, 1);
+				vp9_aux_dma =
+					(dma_addr_t)readl(cedar_devp->iomap_addrs.regs_ve +
+							   0x500 + 0x64) << 8;
+				vp9_log_dma_chunks("PRE", vp9_aux_dma);
+			}
 
 			spin_lock_irqsave(&cedar_devp->lock, flags);
 			if (cedar_devp->de_irq_flag)
@@ -1431,8 +1544,86 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 			spin_unlock_irqrestore(&cedar_devp->lock, flags);
 			wait_event_timeout(wait_ve, cedar_devp->de_irq_flag, ve_timeout*HZ);
 			cedar_devp->de_irq_flag = 0;
-
+			if (snapshot_vp9_regs && vp9_aux_dma)
+				vp9_log_dma_chunks("POST", vp9_aux_dma);
+			if (snapshot_vp9_regs &&
+			    cmpxchg(&vp9_snapshot_state, 1, 2) == 1) {
+				smp_rmb();
+				/*
+				 * Status was captured as successful by the IRQ handler,
+				 * so the block is idle.  Only now is it safe to touch the
+				 * VP9 SRAM data port; doing this on an active/timed-out
+				 * engine can lock the H618 VE interconnect.
+				 */
+				if ((vp9_snapshot_regs[0x38 / sizeof(u32)] &
+				     GENMASK(2, 0)) == BIT(0)) {
+					writel(0, cedar_devp->iomap_addrs.regs_ve +
+					       0x500 + 0xe0);
+					for (i = 0;
+					     i < ARRAY_SIZE(vp9_snapshot_sram_dequant);
+					     i++)
+						vp9_snapshot_sram_dequant[i] =
+							readl(cedar_devp->iomap_addrs.regs_ve +
+							      0x500 + 0xe4);
+					writel(0x100,
+					       cedar_devp->iomap_addrs.regs_ve +
+					       0x500 + 0xe0);
+					for (i = 0;
+					     i < ARRAY_SIZE(vp9_snapshot_sram_loop_filter);
+					     i++)
+						vp9_snapshot_sram_loop_filter[i] =
+							readl(cedar_devp->iomap_addrs.regs_ve +
+							      0x500 + 0xe4);
+				}
+				for (i = 0; i < ARRAY_SIZE(vp9_snapshot_pre_global); i += 4)
+					pr_info("H618VP9 PRE-G %03x: %08x %08x %08x %08x\n",
+						i * 4, vp9_snapshot_pre_global[i],
+						vp9_snapshot_pre_global[i + 1],
+						vp9_snapshot_pre_global[i + 2],
+						vp9_snapshot_pre_global[i + 3]);
+				for (i = 0; i < ARRAY_SIZE(vp9_snapshot_pre_regs); i += 4)
+					pr_info("H618VP9 PRE-R %03x: %08x %08x %08x %08x\n",
+						0x500 + i * 4, vp9_snapshot_pre_regs[i],
+						vp9_snapshot_pre_regs[i + 1],
+						vp9_snapshot_pre_regs[i + 2],
+						vp9_snapshot_pre_regs[i + 3]);
+				for (i = 0; i < ARRAY_SIZE(vp9_snapshot_global); i += 4)
+					pr_info("H618VP9 POST-G %03x: %08x %08x %08x %08x\n",
+						i * 4, vp9_snapshot_global[i],
+						vp9_snapshot_global[i + 1],
+						vp9_snapshot_global[i + 2],
+						vp9_snapshot_global[i + 3]);
+				for (i = 0; i < ARRAY_SIZE(vp9_snapshot_regs); i += 4)
+					pr_info("H618VP9 POST-R %03x: %08x %08x %08x %08x\n",
+						0x500 + i * 4, vp9_snapshot_regs[i],
+						vp9_snapshot_regs[i + 1],
+						vp9_snapshot_regs[i + 2],
+						vp9_snapshot_regs[i + 3]);
+				pr_info("H618VP9 PRE-R 5f0: %08x\n",
+					vp9_snapshot_pre_std_bitoffset);
+				pr_info("H618VP9 POST-R 5f0: %08x\n",
+					vp9_snapshot_std_bitoffset);
+				for (i = 0;
+				     i < ARRAY_SIZE(vp9_snapshot_sram_dequant);
+				     i += 4)
+					pr_info("H618VP9 SRAM-DQ %02x: %08x %08x %08x %08x\n",
+						i * 4,
+						vp9_snapshot_sram_dequant[i],
+						vp9_snapshot_sram_dequant[i + 1],
+						vp9_snapshot_sram_dequant[i + 2],
+						vp9_snapshot_sram_dequant[i + 3]);
+				for (i = 0;
+				     i < ARRAY_SIZE(vp9_snapshot_sram_loop_filter);
+				     i += 4)
+					pr_info("H618VP9 SRAM-LF %02x: %08x %08x %08x %08x\n",
+						i * 4,
+						vp9_snapshot_sram_loop_filter[i],
+						vp9_snapshot_sram_loop_filter[i + 1],
+						vp9_snapshot_sram_loop_filter[i + 2],
+						vp9_snapshot_sram_loop_filter[i + 3]);
+			}
 			return cedar_devp->de_irq_value;
+		}
 
 		case IOCTL_WAIT_VE_EN:
 
@@ -1938,10 +2129,17 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 			}
 			buffer->size = size;
 			list_add_tail(&buffer->list, &info->coherent_buffers);
+			mutex_lock(&cedar_coherent_buffers_global_lock);
+			list_add_tail(&buffer->global_list,
+				      &cedar_coherent_buffers_global);
+			mutex_unlock(&cedar_coherent_buffers_global_lock);
 			request.handle = buffer->handle;
 			request.dma_addr = buffer->dma_addr;
 			if (copy_to_user((void __user *)arg, &request, sizeof(request))) {
 				list_del(&buffer->list);
+				mutex_lock(&cedar_coherent_buffers_global_lock);
+				list_del(&buffer->global_list);
+				mutex_unlock(&cedar_coherent_buffers_global_lock);
 				dma_free_coherent(cedar_devp->plat_dev, buffer->size,
 						  buffer->cpu_addr, buffer->dma_addr);
 				kfree(buffer);
@@ -1964,6 +2162,9 @@ static long compat_cedardev_ioctl(struct file *filp, unsigned int cmd, unsigned 
 			if (info->engine_refs)
 				cedar_quiesce_dma();
 			list_del(&buffer->list);
+			mutex_lock(&cedar_coherent_buffers_global_lock);
+			list_del(&buffer->global_list);
+			mutex_unlock(&cedar_coherent_buffers_global_lock);
 			dma_free_coherent(cedar_devp->plat_dev, buffer->size,
 					  buffer->cpu_addr, buffer->dma_addr);
 			kfree(buffer);

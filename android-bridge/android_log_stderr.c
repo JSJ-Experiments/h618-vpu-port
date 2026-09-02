@@ -3,6 +3,10 @@
 #include <stdarg.h>
 #include <stdio.h>
 
+/* CedarX's debug branches emit register and SRAM values when this is <= 3.
+ * Keep the diagnostic preload self-contained instead of patching libcdc_base. */
+__attribute__((visibility("default"))) int GLOBAL_LOG_LEVEL = 2;
+
 __attribute__((visibility("default"))) int __android_log_print(int priority,
                                                                  const char *tag,
                                                                  const char *format, ...)

@@ -97,6 +97,8 @@ struct bridge_buffer {
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static int g_fd = -1;
 static unsigned int g_refcount;
+static unsigned int g_flush_dump_count;
+static unsigned int g_memops_dump_count;
 static struct bridge_buffer *g_buffers;
 
 #define BRIDGE_DEBUG(...) do { if (getenv("CEDAR_BRIDGE_DEBUG")) fprintf(stderr, __VA_ARGS__); } while (0)
@@ -159,6 +161,62 @@ static void bridge_free_buffer(struct bridge_buffer *buffer)
     free(buffer);
 }
 
+static void bridge_dump_buffer(const struct bridge_buffer *buffer,
+                               const char *tag)
+{
+    const char *directory = getenv("CEDAR_BRIDGE_DUMP_DIR");
+    char path[512];
+    const uint8_t *cursor;
+    size_t remaining;
+    int fd;
+
+    if (!directory || !*directory || !buffer || !buffer->virt)
+        return;
+    if (snprintf(path, sizeof(path), "%s/%s%s%s-dma-%08llx-size-%u.bin",
+                 directory, tag ? tag : "", tag && *tag ? "-" : "",
+                 "", (unsigned long long)buffer->dma_addr,
+                 buffer->size) >= (int)sizeof(path))
+        return;
+    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0)
+        return;
+    cursor = buffer->virt;
+    remaining = buffer->size;
+    while (remaining) {
+        ssize_t written = write(fd, cursor, remaining);
+
+        if (written <= 0)
+            break;
+        cursor += written;
+        remaining -= (size_t)written;
+    }
+    close(fd);
+}
+
+/* Reverse-engineering hook used by the one-frame smoke tools.  CedarX keeps
+ * several long-lived allocations until process teardown and may retain extra
+ * MemAdapter open references, so relying on bridge_close() to dump them loses
+ * the hardware-populated probability/count tables. */
+__attribute__((visibility("default"))) void MemAdapterDumpAll(void)
+{
+    struct bridge_buffer *buffer;
+
+    pthread_mutex_lock(&g_lock);
+    for (buffer = g_buffers; buffer; buffer = buffer->next)
+        bridge_dump_buffer(buffer, NULL);
+    pthread_mutex_unlock(&g_lock);
+}
+
+__attribute__((visibility("default"))) void MemAdapterDumpAllTagged(const char *tag)
+{
+    struct bridge_buffer *buffer;
+
+    pthread_mutex_lock(&g_lock);
+    for (buffer = g_buffers; buffer; buffer = buffer->next)
+        bridge_dump_buffer(buffer, tag);
+    pthread_mutex_unlock(&g_lock);
+}
+
 static int bridge_open2(void *ve_ops, void *ve_self)
 {
     (void)ve_ops;
@@ -177,6 +235,7 @@ static void bridge_close(void)
     }
     while ((buffer = g_buffers) != NULL) {
         g_buffers = buffer->next;
+        bridge_dump_buffer(buffer, NULL);
         bridge_free_buffer(buffer);
     }
     if (g_fd >= 0) {
@@ -264,10 +323,30 @@ static void bridge_pfree(void *virt, void *ve_ops, void *ve_self)
 
 static void bridge_flush_cache(void *virt, int size)
 {
-    (void)virt;
-    (void)size;
+    struct bridge_buffer *buffer;
+
     /* dma_alloc_coherent() memory is already coherent for the VE. */
     __sync_synchronize();
+
+    if (!getenv("CEDAR_BRIDGE_DUMP_FLUSH"))
+        return;
+
+    pthread_mutex_lock(&g_lock);
+    buffer = find_virt(virt);
+    /* The H618 VP9 backend's 0x88000-byte area contains its probability and
+     * count tables.  Dump only this allocation to avoid turning framebuffer
+     * cache calls into hundreds of megabytes of diagnostic writes. */
+    if (buffer && (buffer->size == 0x88000 ||
+                   buffer->size == 0x1f4000) && g_flush_dump_count < 32) {
+        char tag[80];
+        uintptr_t offset = (uintptr_t)virt - (uintptr_t)buffer->virt;
+
+        snprintf(tag, sizeof(tag), "flush-%03u-off-%x-len-%x",
+                 g_flush_dump_count++, (unsigned int)offset,
+                 size > 0 ? (unsigned int)size : 0);
+        bridge_dump_buffer(buffer, tag);
+    }
+    pthread_mutex_unlock(&g_lock);
 }
 
 static void *bridge_get_phyaddr(void *virt)
@@ -305,10 +384,57 @@ static void *bridge_get_viraddr(void *dma_addr)
     return (void *)result;
 }
 
-static int bridge_mem_set(void *dst, int value, size_t size) { memset(dst, value, size); return 0; }
-static int bridge_mem_copy(void *dst, void *src, size_t size) { memcpy(dst, src, size); return 0; }
-static int bridge_mem_read(void *dst, void *src, size_t size) { memcpy(dst, src, size); return 0; }
-static int bridge_mem_write(void *dst, void *src, size_t size) { memcpy(dst, src, size); return 0; }
+static void bridge_dump_memop(void *address, size_t size, const char *operation)
+{
+    struct bridge_buffer *buffer;
+
+    if (!getenv("CEDAR_BRIDGE_DUMP_MEMOPS"))
+        return;
+
+    pthread_mutex_lock(&g_lock);
+    buffer = find_virt(address);
+    if (buffer && (buffer->size == 0x88000 ||
+                   buffer->size == 0x1f4000) && g_memops_dump_count < 64) {
+        char tag[96];
+        uintptr_t offset = (uintptr_t)address - (uintptr_t)buffer->virt;
+
+        snprintf(tag, sizeof(tag), "mem-%03u-%s-off-%x-len-%x",
+                 g_memops_dump_count++, operation, (unsigned int)offset,
+                 (unsigned int)size);
+        bridge_dump_buffer(buffer, tag);
+        BRIDGE_DEBUG("MemAdapter: %s target 0x88000+0x%x size=0x%x\n",
+                     operation, (unsigned int)offset, (unsigned int)size);
+    }
+    pthread_mutex_unlock(&g_lock);
+}
+
+static int bridge_mem_set(void *dst, int value, size_t size)
+{
+    memset(dst, value, size);
+    bridge_dump_memop(dst, size, "set");
+    return 0;
+}
+
+static int bridge_mem_copy(void *dst, void *src, size_t size)
+{
+    memcpy(dst, src, size);
+    bridge_dump_memop(dst, size, "copy");
+    return 0;
+}
+
+static int bridge_mem_read(void *dst, void *src, size_t size)
+{
+    memcpy(dst, src, size);
+    bridge_dump_memop(src, size, "read");
+    return 0;
+}
+
+static int bridge_mem_write(void *dst, void *src, size_t size)
+{
+    memcpy(dst, src, size);
+    bridge_dump_memop(dst, size, "write");
+    return 0;
+}
 static int bridge_noop(void) { return 0; }
 static int bridge_debug_info(char *buf, int size) { (void)buf; (void)size; return 0; }
 static int bridge_fd_ptr(int fd, void *ptr) { (void)fd; (void)ptr; return -1; }
