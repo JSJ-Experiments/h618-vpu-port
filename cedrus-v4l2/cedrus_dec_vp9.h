@@ -19,15 +19,23 @@ struct cedrus_dec_vp9_context {
 	void *segment_map[2];
 	dma_addr_t segment_map_dma[2];
 	size_t segment_map_size;
-	struct v4l2_vp9_frame_context probability_tables;
-	struct v4l2_vp9_frame_context frame_context[V4L2_VP9_NUM_FRAME_CTX];
-	u8 frame_context_idx;
-};
-
-struct cedrus_dec_vp9_buffer {
 	void *mv_col;
 	dma_addr_t mv_col_dma;
 	size_t mv_col_size;
+	struct v4l2_vp9_frame_context probability_tables;
+	struct v4l2_vp9_frame_context frame_context[V4L2_VP9_NUM_FRAME_CTX];
+	u8 frame_context_idx;
+	u32 previous_width;
+	u32 previous_height;
+	bool previous_valid;
+	bool previous_show_frame;
+	bool previous_intra_only;
+};
+
+struct cedrus_dec_vp9_buffer {
+	u32 width;
+	u32 height;
+	bool valid;
 };
 
 struct cedrus_dec_vp9_job {

@@ -3,9 +3,9 @@
  * H618 native VP9 decoder.
  *
  * Register programming and private-buffer geometry were recovered from
- * Allwinner's Android libawvp9HwAL.so.  The first enabled path is intentionally
- * restricted to 8-bit profile-0 key frames while inter-frame probability,
- * reference and segmentation state is brought up independently.
+ * Allwinner's Android libawvp9HwAL.so.  The enabled path covers 8-bit profile-0
+ * key and same-size inter frames while scaling, backward probability adaptation
+ * and high-bit-depth output are brought up independently.
  */
 
 #include <linux/dma-mapping.h>
@@ -251,35 +251,14 @@ static void cedrus_vp9_loop_filter_write(struct cedrus_context *ctx)
 			      ARRAY_SIZE(values));
 }
 
-static void cedrus_dec_vp9_buffer_cleanup(struct cedrus_context *ctx,
-					  struct cedrus_buffer *buffer)
+static int cedrus_dec_vp9_mv_col_size(unsigned int width, unsigned int height,
+				      size_t *size)
 {
-	struct cedrus_dec_vp9_buffer *vp9_buffer = buffer->engine_buffer;
-	struct device *dev = ctx->proc->dev->dev;
-
-	if (!vp9_buffer->mv_col_size)
-		return;
-
-	dma_free_attrs(dev, vp9_buffer->mv_col_size, vp9_buffer->mv_col,
-		       vp9_buffer->mv_col_dma, DMA_ATTR_NO_KERNEL_MAPPING);
-	vp9_buffer->mv_col = NULL;
-	vp9_buffer->mv_col_size = 0;
-}
-
-static int cedrus_dec_vp9_buffer_prepare(struct cedrus_context *ctx,
-					 struct cedrus_dec_vp9_buffer *buffer,
-					 unsigned int width,
-					 unsigned int height)
-{
-	struct device *dev = ctx->proc->dev->dev;
 	size_t rows, cols, blocks, bytes;
-
-	if (buffer->mv_col_size)
-		return 0;
 
 	/*
 	 * This is the exact H618 CedarX Vp9CreateFbmBuffer geometry:
-	 * ALIGN(16 KiB + padded_8x8_blocks * 5 * 128, 1 KiB).
+	 * page-align(16 KiB + padded_8x8_blocks * 5 * 128).
 	 */
 	rows = (15 + DIV_ROUND_UP(height, 8)) >> 3;
 	cols = (15 + DIV_ROUND_UP(width, 8)) >> 3;
@@ -288,14 +267,7 @@ static int cedrus_dec_vp9_buffer_prepare(struct cedrus_context *ctx,
 	    check_add_overflow(bytes, (size_t)SZ_16K, &bytes))
 		return -EOVERFLOW;
 
-	bytes = ALIGN(bytes, SZ_1K);
-	buffer->mv_col = dma_alloc_attrs(dev, bytes, &buffer->mv_col_dma,
-					 GFP_KERNEL,
-					 DMA_ATTR_NO_KERNEL_MAPPING);
-	if (!buffer->mv_col)
-		return -ENOMEM;
-
-	buffer->mv_col_size = bytes;
+	*size = PAGE_ALIGN(bytes);
 	return 0;
 }
 
@@ -325,8 +297,14 @@ static void cedrus_dec_vp9_cleanup(struct cedrus_context *ctx)
 				  vp9->prob_count, vp9->prob_count_dma);
 		vp9->prob_count = NULL;
 	}
+	if (vp9->mv_col) {
+		dma_free_coherent(dev, vp9->mv_col_size, vp9->mv_col,
+				  vp9->mv_col_dma);
+		vp9->mv_col = NULL;
+	}
 
 	vp9->segment_map_size = 0;
+	vp9->mv_col_size = 0;
 }
 
 static int cedrus_dec_vp9_setup(struct cedrus_context *ctx)
@@ -338,11 +316,20 @@ static int cedrus_dec_vp9_setup(struct cedrus_context *ctx)
 	unsigned int i;
 	int ret = -ENOMEM;
 
+	ret = cedrus_dec_vp9_mv_col_size(coded->width, coded->height,
+					 &vp9->mv_col_size);
+	if (ret)
+		return ret;
+	vp9->mv_col = dma_alloc_coherent(dev, vp9->mv_col_size,
+					 &vp9->mv_col_dma, GFP_KERNEL);
+	if (!vp9->mv_col)
+		return -ENOMEM;
+
 	vp9->prob_count = dma_alloc_coherent(dev,
 					     CEDRUS_DEC_VP9_PROB_COUNT_SIZE,
 					     &vp9->prob_count_dma, GFP_KERNEL);
 	if (!vp9->prob_count)
-		return -ENOMEM;
+		goto error;
 
 	vp9->entry_info = dma_alloc_coherent(dev,
 					     CEDRUS_DEC_VP9_ENTRY_INFO_SIZE,
@@ -368,6 +355,7 @@ static int cedrus_dec_vp9_setup(struct cedrus_context *ctx)
 	}
 
 	memset(vp9->prob_count, 0, CEDRUS_DEC_VP9_PROB_COUNT_SIZE);
+	memset(vp9->mv_col, 0, vp9->mv_col_size);
 	memset(vp9->entry_info, 0, CEDRUS_DEC_VP9_ENTRY_INFO_SIZE);
 	for (i = 0; i < ARRAY_SIZE(vp9->segment_map); i++)
 		memset(vp9->segment_map[i], 0, vp9->segment_map_size);
@@ -379,6 +367,28 @@ static int cedrus_dec_vp9_setup(struct cedrus_context *ctx)
 error:
 	cedrus_dec_vp9_cleanup(ctx);
 	return ret;
+}
+
+struct cedrus_vp9_reference {
+	struct cedrus_dec_vp9_buffer *private;
+	dma_addr_t luma;
+	dma_addr_t chroma;
+};
+
+static int cedrus_dec_vp9_reference(struct cedrus_context *ctx, u64 timestamp,
+				    struct cedrus_vp9_reference *reference)
+{
+	struct cedrus_buffer *buffer;
+
+	buffer = cedrus_buffer_picture_find(ctx, timestamp);
+	if (!buffer)
+		return -EINVAL;
+	reference->private = buffer->engine_buffer;
+	if (!reference->private || !reference->private->valid)
+		return -EINVAL;
+	cedrus_buffer_picture_dma(ctx, buffer, &reference->luma,
+				  &reference->chroma);
+	return 0;
 }
 
 static int cedrus_dec_vp9_job_prepare(struct cedrus_context *ctx)
@@ -432,8 +442,7 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 	struct cedrus_device *dev = ctx->proc->dev;
 	struct cedrus_dec_vp9_context *vp9 = ctx->engine_ctx;
 	struct cedrus_dec_vp9_job *job = ctx->engine_job;
-	struct cedrus_dec_vp9_buffer *vp9_buffer =
-		cedrus_job_engine_buffer(ctx);
+	struct cedrus_vp9_reference last = { 0 }, golden = { 0 }, alt = { 0 };
 	const struct v4l2_ctrl_vp9_frame *frame = job->frame;
 	struct v4l2_pix_format *coded = &ctx->v4l2.format_coded.fmt.pix;
 	struct v4l2_pix_format *picture = &ctx->v4l2.format_picture.fmt.pix;
@@ -446,6 +455,9 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 	unsigned int sb_rows = DIV_ROUND_UP(height, 64);
 	unsigned int tile_cols = 1U << frame->tile_cols_log2;
 	unsigned int tile;
+	bool intra_only = frame->flags & (V4L2_VP9_FRAME_FLAG_KEY_FRAME |
+						V4L2_VP9_FRAME_FLAG_INTRA_ONLY);
+	bool use_previous_mvs;
 	u32 value;
 	int ret;
 
@@ -454,8 +466,7 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 	 * native decode path, but references/probability adaptation and 10-bit
 	 * output are separate bring-up steps.
 	 */
-	if (!(frame->flags & V4L2_VP9_FRAME_FLAG_KEY_FRAME) ||
-	    frame->profile != 0 || frame->bit_depth != 8 ||
+	if (frame->profile != 0 || frame->bit_depth != 8 ||
 	    (frame->seg.flags & V4L2_VP9_SEGMENTATION_FLAG_ENABLED) ||
 	    frame->tile_cols_log2 > 6 || frame->tile_rows_log2 ||
 	    picture->pixelformat != V4L2_PIX_FMT_NV12 ||
@@ -480,9 +491,27 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 	    ((coded_addr | luma_addr | chroma_addr) & 0xff))
 		return -ERANGE;
 
-	ret = cedrus_dec_vp9_buffer_prepare(ctx, vp9_buffer, width, height);
-	if (ret)
-		return ret;
+	if (!(frame->flags & V4L2_VP9_FRAME_FLAG_KEY_FRAME)) {
+		ret = cedrus_dec_vp9_reference(ctx, frame->last_frame_ts, &last);
+		if (ret)
+			return ret;
+		ret = cedrus_dec_vp9_reference(ctx, frame->golden_frame_ts,
+					      &golden);
+		if (ret)
+			return ret;
+		ret = cedrus_dec_vp9_reference(ctx, frame->alt_frame_ts, &alt);
+		if (ret)
+			return ret;
+		if (last.private->width != width || last.private->height != height ||
+		    golden.private->width != width ||
+		    golden.private->height != height ||
+		    alt.private->width != width || alt.private->height != height)
+			return -EOPNOTSUPP;
+	}
+	use_previous_mvs = !intra_only && vp9->previous_valid &&
+		!(frame->flags & V4L2_VP9_FRAME_FLAG_ERROR_RESILIENT) &&
+		vp9->previous_show_frame && !vp9->previous_intra_only &&
+		vp9->previous_width == width && vp9->previous_height == height;
 
 	/* Reset, forward-update and pack the exact context supplied by userspace. */
 	memset(vp9->prob_count, 0, CEDRUS_DEC_VP9_PROB_COUNT_SIZE);
@@ -518,20 +547,41 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 
 	cedrus_write(dev, VE_DEC_VP9_STATUS, VE_DEC_VP9_STATUS_MASK);
 
-	value = CEDRUS_VP9_HDR_KEY_BASE |
+	value = (frame->flags & V4L2_VP9_FRAME_FLAG_KEY_FRAME ?
+		 CEDRUS_VP9_HDR_KEY_BASE :
+		 (0x84001102 |
+		  ((frame->flags & V4L2_VP9_FRAME_FLAG_ALLOW_HIGH_PREC_MV) ?
+		   BIT(11) : 0) |
+		  (use_previous_mvs ? BIT(25) : 0))) |
 		(tile_cols > 1 ? BIT(0) : 0) |
 		(job->compressed_hdr->tx_mode << 20);
 	cedrus_write(dev, VE_DEC_VP9_HDR_SYNC, value);
 	cedrus_write(dev, VE_DEC_VP9_PIC_SIZE, (height << 16) | width);
-	cedrus_write(dev, VE_DEC_VP9_LAST_PIC_SIZE, 0);
-	cedrus_write(dev, VE_DEC_VP9_GOLDEN_PIC_SIZE, 0);
-	cedrus_write(dev, VE_DEC_VP9_ALTREF_PIC_SIZE, 0);
-	cedrus_write(dev, VE_DEC_VP9_LAST_SCALE0, 0);
-	cedrus_write(dev, VE_DEC_VP9_LAST_SCALE1, 0x10000000);
-	cedrus_write(dev, VE_DEC_VP9_GOLDEN_SCALE0, 0);
-	cedrus_write(dev, VE_DEC_VP9_GOLDEN_SCALE1, 0);
-	cedrus_write(dev, VE_DEC_VP9_ALTREF_SCALE0, 0);
-	cedrus_write(dev, VE_DEC_VP9_ALTREF_SCALE1, 0);
+	if (frame->flags & V4L2_VP9_FRAME_FLAG_KEY_FRAME) {
+		cedrus_write(dev, VE_DEC_VP9_LAST_PIC_SIZE, 0);
+		cedrus_write(dev, VE_DEC_VP9_GOLDEN_PIC_SIZE, 0);
+		cedrus_write(dev, VE_DEC_VP9_ALTREF_PIC_SIZE, 0);
+		cedrus_write(dev, VE_DEC_VP9_LAST_SCALE0, 0);
+		cedrus_write(dev, VE_DEC_VP9_LAST_SCALE1, 0x10000000);
+		cedrus_write(dev, VE_DEC_VP9_GOLDEN_SCALE0, 0);
+		cedrus_write(dev, VE_DEC_VP9_GOLDEN_SCALE1, 0);
+		cedrus_write(dev, VE_DEC_VP9_ALTREF_SCALE0, 0);
+		cedrus_write(dev, VE_DEC_VP9_ALTREF_SCALE1, 0);
+	} else {
+		cedrus_write(dev, VE_DEC_VP9_LAST_PIC_SIZE,
+			     (last.private->height << 16) | last.private->width);
+		cedrus_write(dev, VE_DEC_VP9_GOLDEN_PIC_SIZE,
+			     (golden.private->height << 16) | golden.private->width);
+		cedrus_write(dev, VE_DEC_VP9_ALTREF_PIC_SIZE,
+			     (alt.private->height << 16) | alt.private->width);
+		/* Same-size reference factors recovered from the H618 HAL. */
+		cedrus_write(dev, VE_DEC_VP9_LAST_SCALE0, 0x0008000f);
+		cedrus_write(dev, VE_DEC_VP9_LAST_SCALE1, 0x1008000f);
+		cedrus_write(dev, VE_DEC_VP9_GOLDEN_SCALE0, 0x0008000f);
+		cedrus_write(dev, VE_DEC_VP9_GOLDEN_SCALE1, 0x4000000f);
+		cedrus_write(dev, VE_DEC_VP9_ALTREF_SCALE0, 0x0008000f);
+		cedrus_write(dev, VE_DEC_VP9_ALTREF_SCALE1, 0x0008000f);
+	}
 
 	cedrus_write(dev, VE_DEC_VP9_SEGMENT_FEATURE, 0);
 	cedrus_write(dev, VE_DEC_VP9_NEIGHBOR_ADDR,
@@ -548,7 +598,7 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 	cedrus_write(dev, VE_DEC_VP9_VLD_BYPASS_ADDR, 0);
 	cedrus_write(dev, VE_DEC_VP9_COL_MV_ADDR,
 		     VE_DEC_VP9_DMA_ADDR_BASE(
-			     cedrus_dma_addr(dev, vp9_buffer->mv_col_dma)));
+			     cedrus_dma_addr(dev, vp9->mv_col_dma)));
 	cedrus_write(dev, VE_DEC_VP9_ENTROPY_LOWER8, 0);
 	cedrus_write(dev, VE_DEC_VP9_FIRST_OUTPUT_OFFSET_ADDR, 0);
 	cedrus_write(dev, VE_DEC_VP9_10BIT_CONFIGURE, 0);
@@ -557,12 +607,18 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 		     VE_DEC_VP9_DMA_ADDR_BASE(luma_addr));
 	cedrus_write(dev, VE_DEC_VP9_CURRENT_CHROMA_ADDR,
 		     VE_DEC_VP9_DMA_ADDR_BASE(chroma_addr));
-	cedrus_write(dev, VE_DEC_VP9_LAST_LUMA_ADDR, 0);
-	cedrus_write(dev, VE_DEC_VP9_LAST_CHROMA_ADDR, 0);
-	cedrus_write(dev, VE_DEC_VP9_GOLDEN_LUMA_ADDR, 0);
-	cedrus_write(dev, VE_DEC_VP9_GOLDEN_CHROMA_ADDR, 0);
-	cedrus_write(dev, VE_DEC_VP9_ALTREF_LUMA_ADDR, 0);
-	cedrus_write(dev, VE_DEC_VP9_ALTREF_CHROMA_ADDR, 0);
+	cedrus_write(dev, VE_DEC_VP9_LAST_LUMA_ADDR,
+		     VE_DEC_VP9_DMA_ADDR_BASE(cedrus_dma_addr(dev, last.luma)));
+	cedrus_write(dev, VE_DEC_VP9_LAST_CHROMA_ADDR,
+		     VE_DEC_VP9_DMA_ADDR_BASE(cedrus_dma_addr(dev, last.chroma)));
+	cedrus_write(dev, VE_DEC_VP9_GOLDEN_LUMA_ADDR,
+		     VE_DEC_VP9_DMA_ADDR_BASE(cedrus_dma_addr(dev, golden.luma)));
+	cedrus_write(dev, VE_DEC_VP9_GOLDEN_CHROMA_ADDR,
+		     VE_DEC_VP9_DMA_ADDR_BASE(cedrus_dma_addr(dev, golden.chroma)));
+	cedrus_write(dev, VE_DEC_VP9_ALTREF_LUMA_ADDR,
+		     VE_DEC_VP9_DMA_ADDR_BASE(cedrus_dma_addr(dev, alt.luma)));
+	cedrus_write(dev, VE_DEC_VP9_ALTREF_CHROMA_ADDR,
+		     VE_DEC_VP9_DMA_ADDR_BASE(cedrus_dma_addr(dev, alt.chroma)));
 	cedrus_write(dev, VE_DEC_VP9_SEGMENT_ID_ADDR, 0);
 	cedrus_write(dev, VE_DEC_VP9_STD_BIT_OFFSET, 0);
 
@@ -627,11 +683,24 @@ static void cedrus_dec_vp9_job_trigger(struct cedrus_context *ctx)
 static void cedrus_dec_vp9_job_finish(struct cedrus_context *ctx, int state)
 {
 	struct cedrus_dec_vp9_context *vp9 = ctx->engine_ctx;
+	struct cedrus_dec_vp9_buffer *buffer = cedrus_job_engine_buffer(ctx);
 	const struct v4l2_ctrl_vp9_frame *frame =
 		((struct cedrus_dec_vp9_job *)ctx->engine_job)->frame;
 
-	if (state != VB2_BUF_STATE_DONE ||
-	    !(frame->flags & V4L2_VP9_FRAME_FLAG_REFRESH_FRAME_CTX))
+	if (state != VB2_BUF_STATE_DONE)
+		return;
+	buffer->width = frame->frame_width_minus_1 + 1;
+	buffer->height = frame->frame_height_minus_1 + 1;
+	buffer->valid = true;
+	vp9->previous_width = buffer->width;
+	vp9->previous_height = buffer->height;
+	vp9->previous_valid = true;
+	vp9->previous_show_frame =
+		frame->flags & V4L2_VP9_FRAME_FLAG_SHOW_FRAME;
+	vp9->previous_intra_only =
+		frame->flags & (V4L2_VP9_FRAME_FLAG_KEY_FRAME |
+				V4L2_VP9_FRAME_FLAG_INTRA_ONLY);
+	if (!(frame->flags & V4L2_VP9_FRAME_FLAG_REFRESH_FRAME_CTX))
 		return;
 
 	/* Parallel mode has no backward probability adaptation. */
@@ -688,8 +757,6 @@ static const struct cedrus_engine_ops cedrus_dec_vp9_ops = {
 
 	.setup			= cedrus_dec_vp9_setup,
 	.cleanup		= cedrus_dec_vp9_cleanup,
-
-	.buffer_cleanup		= cedrus_dec_vp9_buffer_cleanup,
 
 	.job_prepare		= cedrus_dec_vp9_job_prepare,
 	.job_configure		= cedrus_dec_vp9_job_configure,

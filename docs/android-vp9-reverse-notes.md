@@ -30,10 +30,19 @@ caused valid-looking completion with incorrect pixels.
 
 H618 VP9 therefore belongs in the shared VE driver and can coexist with the
 other Cedrus engines; it is not a separately mapped Hantro block.  The native
-key-frame path uses `V4L2_PIX_FMT_VP9_FRAME` plus the standardized
+path uses `V4L2_PIX_FMT_VP9_FRAME` plus the standardized
 `V4L2_CID_STATELESS_VP9_FRAME` and
-`V4L2_CID_STATELESS_VP9_COMPRESSED_HDR` request controls.  Inter-frame state
-and the remaining profiles are still under implementation.
+`V4L2_CID_STATELESS_VP9_COMPRESSED_HDR` request controls.  A three-frame
+key/P/P stream is byte-identical to software decoding.  The sequence also
+identified header-sync bit 25 as the H618 `use_prev_frame_mvs` control: it is
+clear for the first inter frame after a key frame and set for the next inter
+frame.  CedarX uses one persistent page-aligned motion-vector workspace for
+the sequence rather than one allocation per reference picture.
+
+`tools/vp9-controls-dump` uses GStreamer's stateful VP9 parser to turn an IVF
+stream into the exact standardized frame and compressed-header controls used
+by `tools/vp9-request-sequence`.  This keeps the native validation path
+independent of the proprietary parser.
 
 AVS2 also uses the CedarX VE callback table, but Linux 6.1 has no standardized
 stateless AVS2 request controls. Its native interface will therefore require

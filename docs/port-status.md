@@ -30,12 +30,16 @@ Stock Cedrus decode is hardware-validated for MPEG-2, H.264, H.265/HEVC and
 VP8. Panfrost is also validated under XFCE/Xorg with an accelerated Mali-G31
 renderer.
 
-The new native H618 VP9 engine now decodes 8-bit profile-0 key frames through
+The new native H618 VP9 engine now decodes 8-bit profile-0 key and same-size
+inter frames through
 the standardized stateless request controls.  The control probability context
 is forward-updated and packed at run time; no captured vendor table is used by
-the driver.  Output is byte-identical to software decoding for 320x240 at two
-different compressed-header probability sets and for a four-tile 1920x1080
-frame (the latter compared over the complete 1920x1088 capture allocation).
+the driver.  Output is byte-identical to software decoding for 320x240 key
+frames at two different compressed-header probability sets, for a four-tile
+1920x1080 key frame (compared over the complete 1920x1088 capture allocation),
+and for every frame of a three-frame 320x240 key/P/P sequence.  The q37 key
+frame's native and fresh FFmpeg reference CRCs are both `4b33ea93`; the former
+`674f4ee7` comparison target was a stale `/tmp` artifact.
 
 The module is currently validated as a guarded replacement: remove distro
 `sunxi_cedrus`, load its V4L2/VB2 dependencies and the experimental module,
@@ -55,8 +59,8 @@ own the VE concurrently.
 
 ## Remaining scope
 
-* Finish VP9 inter-frame references, backward probability adaptation,
-  segmentation, tile rows, and profile/10-bit coverage.  AVS2 still requires
+* Finish VP9 reference scaling, backward probability adaptation, segmentation,
+  tile rows, and profile/10-bit coverage.  AVS2 still requires
   a new codec engine and a suitable userspace API rather than mere format
   advertisement.
 * Package the native module for persistent boot and validate decode/encode
