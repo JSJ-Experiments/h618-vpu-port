@@ -622,6 +622,14 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 	cedrus_write(dev, VE_DEC_VP9_SEGMENT_ID_ADDR, 0);
 	cedrus_write(dev, VE_DEC_VP9_STD_BIT_OFFSET, 0);
 
+	/* VP9SetTopReg() programs these three top-level output registers for every
+	 * frame.  They survive the decoder reset and therefore must not be left at
+	 * values from a previous codec or userspace probe. */
+	cedrus_write(dev, VE_PRIMARY_CHROMA_BUF_LEN,
+		     picture->bytesperline * picture->height / 4);
+	cedrus_write(dev, VE_PRIMARY_FB_LINE_STRIDE,
+		     VE_PRIMARY_FB_LINE_STRIDE_LUMA(picture->bytesperline) |
+		     VE_PRIMARY_FB_LINE_STRIDE_CHROMA(picture->bytesperline / 2));
 	cedrus_write(dev, VE_PRIMARY_OUT_FMT, VE_PRIMARY_OUT_FMT_NV12);
 
 	cedrus_vp9_dequant_write(ctx);

@@ -109,18 +109,18 @@ static int cedrus_dec_format_picture_prepare(struct cedrus_context *ctx,
 		&ctx->v4l2.format_coded.fmt.pix;
 	unsigned int width, height;
 	unsigned int sizeimage;
-	unsigned int bytesperline = pix_format->bytesperline;
+	unsigned int bytesperline;
 
 	/* Picture format dimensions are copied from coded format. */
 	width = pix_format_coded->width;
 	height = pix_format_coded->height;
 
-	/* Check minimum allowed bytesperline, maximum is to avoid overflow. */
-	if (bytesperline < width || bytesperline > (32 * width))
-		bytesperline = width;
-
-	/* Macroblock-aligned stride. */
-	bytesperline = ALIGN(bytesperline, 16);
+	/* The VE primary reconstruction path has one global stride register and
+	 * the decoder backends program it from the coded width.  Advertising a
+	 * larger userspace-requested stride therefore produced internally
+	 * inconsistent reference and chroma addresses.  Expose the tight,
+	 * macroblock-aligned layout the hardware actually uses. */
+	bytesperline = ALIGN(width, 16);
 
 	switch (pix_format->pixelformat) {
 	case V4L2_PIX_FMT_NV12:

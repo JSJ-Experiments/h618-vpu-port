@@ -41,6 +41,12 @@ and for every frame of a three-frame 320x240 key/P/P sequence.  The q37 key
 frame's native and fresh FFmpeg reference CRCs are both `4b33ea93`; the former
 `674f4ee7` comparison target was a stale `/tmp` artifact.
 
+The distro GStreamer `v4l2slvp9dec` element now discovers the experimental
+device and decodes that sequence byte-for-byte identically to FFmpeg.  Decoder
+capture stride propagation was corrected so a stale 1280-pixel default cannot
+leak into a 320-pixel sequence.  GStreamer regression runs remain byte-exact
+to the recorded hardware outputs for H.264, HEVC, VP8 and MPEG-2.
+
 The module is currently validated as a guarded replacement: remove distro
 `sunxi_cedrus`, load its V4L2/VB2 dependencies and the experimental module,
 run the test, then unload it and restore distro `sunxi_cedrus`. The test helper
