@@ -64,6 +64,14 @@ FFmpeg software reference (SHA-256
 The same reverse pass corrected the inter-frame header fields for high-precision
 motion vectors and interpolation-filter selection.
 
+Both VP9 tile dimensions are supported.  The H618 consumes row-major tile
+geometry records from the head of its auxiliary buffer; the first tile remains
+in the dedicated start/end registers.  Twelve-frame row-only and combined
+two-column/two-row sequences decode byte-identically to FFmpeg after removing
+the V4L2 capture buffer's normal 16-line alignment padding.  The combined 2-D
+test has SHA-256
+`224bb95c40e9c2b0c8e7b32cac8b9d4f7ebe857e1b2ea696ca0ed3db3c7c1694`.
+
 The module is currently validated as a guarded replacement: remove distro
 `sunxi_cedrus`, load its V4L2/VB2 dependencies and the experimental module,
 run the test, then unload it and restore distro `sunxi_cedrus`. The test helper
@@ -82,7 +90,7 @@ own the VE concurrently.
 
 ## Remaining scope
 
-* Finish VP9 reference scaling, tile rows, and profile/10-bit coverage.
+* Finish VP9 reference scaling and profile/10-bit coverage.
 * AVS/AVS2 is intentionally deferred. It requires a new codec engine and a
   suitable userspace API rather than mere format advertisement.
 * Package the native module for persistent boot and validate decode/encode

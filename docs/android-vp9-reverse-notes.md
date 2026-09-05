@@ -67,6 +67,15 @@ interpolation-filter enum.  Treating bit 11 as the high-precision flag happened
 to work for switchable-filter streams until a frame disabled high-precision
 motion vectors.
 
+Tile rows and columns share one row-major geometry list at the start of the
+auxiliary buffer.  Each tile after the first occupies four words: two zero
+words, packed `(start_y << 16) | start_x`, and packed
+`(end_y << 16) | end_x`, in 64x64-superblock coordinates.  The first tile uses
+registers `0x568` and `0x56c`.  Header-sync bit 0 means that the total tile
+count is greater than one.  A targeted Android dump for a 640x360 two-row
+frame contained `00000000 00000000 00030000 00050009`, matching the native
+geometry exactly.
+
 `android-bridge/vp9-counts-oracle` calls the vendor library's pure
 `VP9GetCounts()` export against a captured count image.  It is retained only as
 a reverse-engineering cross-check; the native decode path neither loads nor

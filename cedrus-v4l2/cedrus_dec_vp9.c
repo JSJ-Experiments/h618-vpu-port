@@ -550,6 +550,8 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 	unsigned int sb_cols = DIV_ROUND_UP(width, 64);
 	unsigned int sb_rows = DIV_ROUND_UP(height, 64);
 	unsigned int tile_cols = 1U << frame->tile_cols_log2;
+	unsigned int tile_rows = 1U << frame->tile_rows_log2;
+	unsigned int tile_count = tile_cols * tile_rows;
 	unsigned int tile;
 	bool intra_only = frame->flags & (V4L2_VP9_FRAME_FLAG_KEY_FRAME |
 						V4L2_VP9_FRAME_FLAG_INTRA_ONLY);
@@ -563,7 +565,7 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 	 * bring-up steps.
 	 */
 	if (frame->profile != 0 || frame->bit_depth != 8 ||
-	    frame->tile_cols_log2 > 6 || frame->tile_rows_log2 ||
+	    frame->tile_cols_log2 > 6 || frame->tile_rows_log2 > 2 ||
 	    picture->pixelformat != V4L2_PIX_FMT_NV12 ||
 	    width > coded->width || height > coded->height ||
 	    job->compressed_hdr->tx_mode > V4L2_VP9_TX_MODE_SELECT)
@@ -637,20 +639,26 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 				  CEDRUS_DEC_VP9_PROBS_SIZE) ^ ~0);
 	/*
 	 * The first tile is described by TILE_START/TILE_END.  CedarX places one
-	 * four-word geometry record for every remaining tile at the start of the
-	 * probability/entry buffer.  VP9's power-of-two partitioning deliberately
-	 * uses floor boundaries (e.g. 30 SBs / 4 => 0,7,15,22,30).
+	 * four-word geometry record for every remaining tile, in row-major order,
+	 * at the start of the probability/entry buffer.  VP9's power-of-two
+	 * partitioning deliberately uses floor boundaries (e.g. 30 SBs / 4 =>
+	 * 0,7,15,22,30).
 	 */
-	for (tile = 1; tile < tile_cols; tile++) {
+	for (tile = 1; tile < tile_count; tile++) {
 		u32 *entry = (u32 *)vp9->prob_count + (tile - 1) * 4;
-		u32 start = (tile * sb_cols) >> frame->tile_cols_log2;
-		u32 end = (((tile + 1) * sb_cols) >>
-			   frame->tile_cols_log2) - 1;
+		u32 row = tile / tile_cols;
+		u32 col = tile % tile_cols;
+		u32 start_x = (col * sb_cols) >> frame->tile_cols_log2;
+		u32 end_x = (((col + 1) * sb_cols) >>
+			     frame->tile_cols_log2) - 1;
+		u32 start_y = (row * sb_rows) >> frame->tile_rows_log2;
+		u32 end_y = (((row + 1) * sb_rows) >>
+			     frame->tile_rows_log2) - 1;
 
 		entry[0] = 0;
 		entry[1] = 0;
-		entry[2] = start;
-		entry[3] = ((sb_rows - 1) << 16) | end;
+		entry[2] = (start_y << 16) | start_x;
+		entry[3] = (end_y << 16) | end_x;
 	}
 	memset(vp9->entry_info, 0, CEDRUS_DEC_VP9_ENTRY_INFO_SIZE);
 	if (intra_only ||
@@ -678,7 +686,7 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 		((frame->seg.flags &
 		  V4L2_VP9_SEGMENTATION_FLAG_TEMPORAL_UPDATE) ?
 		 CEDRUS_VP9_HDR_SEGMENT_TEMPORAL : 0) |
-		(tile_cols > 1 ? BIT(0) : 0) |
+		(tile_count > 1 ? BIT(0) : 0) |
 		(job->compressed_hdr->tx_mode << 20);
 	cedrus_write(dev, VE_DEC_VP9_HDR_SYNC, value);
 	cedrus_write(dev, VE_DEC_VP9_PIC_SIZE, (height << 16) | width);
@@ -718,7 +726,7 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 			     cedrus_dma_addr(dev, vp9->prob_count_dma)));
 	cedrus_write(dev, VE_DEC_VP9_TILE_START, 0);
 	cedrus_write(dev, VE_DEC_VP9_TILE_END,
-		     ((sb_rows - 1) << 16) |
+		     (((sb_rows >> frame->tile_rows_log2) - 1) << 16) |
 		     ((sb_cols >> frame->tile_cols_log2) - 1));
 	cedrus_write(dev, VE_DEC_VP9_TQ_BYPASS_ADDR, 0);
 	cedrus_write(dev, VE_DEC_VP9_VLD_BYPASS_ADDR, 0);
