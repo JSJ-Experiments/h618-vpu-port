@@ -15,7 +15,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define MAX_FRAMES 16
+#define MAX_FRAMES 1024
+#define VP9_REF_SLOTS 8
 
 struct mapped_buffer {
 	void *data;
@@ -202,11 +203,38 @@ static int load_frame(const char *prefix, unsigned int index, void *data,
 	return 0;
 }
 
+static int timestamp_is_live(const uint64_t refs[VP9_REF_SLOTS],
+			     uint64_t timestamp)
+{
+	unsigned int i;
+
+	if (!timestamp)
+		return 0;
+	for (i = 0; i < VP9_REF_SLOTS; i++)
+		if (refs[i] == timestamp)
+			return 1;
+	return 0;
+}
+
+static int choose_capture_buffer(const uint64_t refs[VP9_REF_SLOTS],
+				 const uint64_t *capture_ts,
+				 unsigned int capture_pool)
+{
+	unsigned int i;
+
+	for (i = 0; i < capture_pool; i++)
+		if (!capture_ts[i] || !timestamp_is_live(refs, capture_ts[i]))
+			return i;
+	return -1;
+}
+
 int main(int argc, char **argv)
 {
 	const char *video_path, *media_path, *prefix, *output_path;
-	unsigned int width, height, frames, i, index;
+	const char *pool_env;
+	unsigned int width, height, frames, capture_pool, i, index;
 	struct mapped_buffer source[1] = { 0 }, capture[MAX_FRAMES] = { 0 };
+	uint64_t capture_ts[MAX_FRAMES] = { 0 };
 	enum v4l2_buf_type type;
 	FILE *output = NULL;
 	int video = -1, media = -1, ret = 1;
@@ -222,6 +250,18 @@ int main(int argc, char **argv)
 	output_path = argv[7];
 	if (!frames || frames > MAX_FRAMES || width < 64 || height < 64)
 		return 64;
+	capture_pool = frames;
+	pool_env = getenv("VP9_CAPTURE_POOL");
+	if (pool_env && *pool_env) {
+		char *end = NULL;
+		unsigned long value = strtoul(pool_env, &end, 0);
+
+		if (!value || value > frames || value > MAX_FRAMES || !end || *end) {
+			fprintf(stderr, "invalid VP9_CAPTURE_POOL=%s\n", pool_env);
+			return 64;
+		}
+		capture_pool = value;
+	}
 	video = open(video_path, O_RDWR | O_CLOEXEC);
 	media = open(media_path, O_RDWR | O_CLOEXEC);
 	output = fopen(output_path, "wb");
@@ -234,8 +274,10 @@ int main(int argc, char **argv)
 	    set_format(video, V4L2_BUF_TYPE_VIDEO_CAPTURE, V4L2_PIX_FMT_NV12,
 		       width, height, 0) ||
 	    alloc_map(video, V4L2_BUF_TYPE_VIDEO_OUTPUT, 1, source) ||
-	    alloc_map(video, V4L2_BUF_TYPE_VIDEO_CAPTURE, frames, capture))
+	    alloc_map(video, V4L2_BUF_TYPE_VIDEO_CAPTURE, capture_pool, capture))
 		goto out;
+	fprintf(stderr, "capture pool: %u buffers for %u frames\n",
+		capture_pool, frames);
 	type = V4L2_BUF_TYPE_VIDEO_OUTPUT;
 	if (xioctl(video, VIDIOC_STREAMON, &type) < 0)
 		goto out;
@@ -246,13 +288,17 @@ int main(int argc, char **argv)
 	for (i = 0; i < frames; i++) {
 		struct v4l2_ctrl_vp9_frame frame;
 		struct v4l2_ctrl_vp9_compressed_hdr probs;
+		uint64_t refs[VP9_REF_SLOTS] = { 0 };
 		struct pollfd pfd;
 		uint64_t timestamp, completed_ts;
 		size_t frame_size, captured;
 		int request_fd = -1;
+		int capture_index;
 
 		if (read_blob(prefix, i, "frame", &frame, sizeof(frame)) ||
 		    read_blob(prefix, i, "probs", &probs, sizeof(probs)) ||
+		    (capture_pool < frames &&
+		     read_blob(prefix, i, "refs", refs, sizeof(refs))) ||
 		    load_frame(prefix, i, source[0].data, source[0].length,
 			       &frame_size) ||
 		    xioctl(media, MEDIA_IOC_REQUEST_ALLOC, &request_fd) < 0) {
@@ -261,10 +307,18 @@ int main(int argc, char **argv)
 			goto streamoff;
 		}
 		timestamp = ((uint64_t)i + 1) * 1000000000ULL;
+		capture_index = choose_capture_buffer(refs, capture_ts, capture_pool);
+		if (capture_index < 0) {
+			fprintf(stderr,
+				"no recyclable capture buffer at frame %u; increase VP9_CAPTURE_POOL\n",
+				i);
+			close(request_fd);
+			goto streamoff;
+		}
 		if (set_controls(video, request_fd, &frame, &probs) ||
 		    queue(video, V4L2_BUF_TYPE_VIDEO_OUTPUT, 0, request_fd,
 			  frame_size, timestamp) ||
-		    queue(video, V4L2_BUF_TYPE_VIDEO_CAPTURE, i, -1, 0, 0) ||
+		    queue(video, V4L2_BUF_TYPE_VIDEO_CAPTURE, capture_index, -1, 0, 0) ||
 		    xioctl(request_fd, MEDIA_REQUEST_IOC_QUEUE, NULL) < 0) {
 			fprintf(stderr, "queue request %u: %s\n", i, strerror(errno));
 			close(request_fd);
@@ -282,15 +336,17 @@ int main(int argc, char **argv)
 		close(request_fd);
 		if (!captured)
 			captured = width * height * 3 / 2;
-		if (index != i || completed_ts != timestamp ||
+		if (index != (unsigned int)capture_index || completed_ts != timestamp ||
 		    fwrite(capture[index].data, 1, captured, output) != captured) {
 			fprintf(stderr, "bad capture frame=%u index=%u ts=%llu/%llu\n",
 				i, index, (unsigned long long)completed_ts,
 				(unsigned long long)timestamp);
 			goto streamoff;
 		}
-		printf("H618 native VP9 frame %u OK: bytes=%zu capture=%zu ts=%llu\n",
-		       i, frame_size, captured, (unsigned long long)completed_ts);
+		capture_ts[index] = timestamp;
+		printf("H618 native VP9 frame %u OK: bytes=%zu capture=%zu ts=%llu buffer=%u\n",
+		       i, frame_size, captured, (unsigned long long)completed_ts,
+		       index);
 	}
 	ret = 0;
 streamoff:
@@ -300,7 +356,7 @@ streamoff:
 	xioctl(video, VIDIOC_STREAMOFF, &type);
 out:
 	if (output) fclose(output);
-	for (i = 0; i < frames && i < MAX_FRAMES; i++)
+	for (i = 0; i < capture_pool && i < MAX_FRAMES; i++)
 		if (capture[i].data) munmap(capture[i].data, capture[i].length);
 	if (source[0].data) munmap(source[0].data, source[0].length);
 	if (media >= 0) close(media);

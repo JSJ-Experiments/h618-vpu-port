@@ -298,7 +298,8 @@ int main(int argc, char **argv)
 		       h.tile_cols_log2, h.tile_rows_log2, frame.seg.flags);
 		if (write_blob(prefix, index, "vp9", data, size) ||
 		    write_blob(prefix, index, "frame", &frame, sizeof(frame)) ||
-		    write_blob(prefix, index, "probs", &probs, sizeof(probs))) {
+		    write_blob(prefix, index, "probs", &probs, sizeof(probs)) ||
+		    write_blob(prefix, index, "refs", refs, sizeof(refs))) {
 			free(data);
 			goto out_parser;
 		}

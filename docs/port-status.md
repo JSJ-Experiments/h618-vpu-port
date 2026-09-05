@@ -87,6 +87,25 @@ segmentation, row-tile and 2-D-tile regressions.  GStreamer 1.24's
 mixed-size test uses the direct stateless request client rather than that
 userspace element.
 
+Sustained 4K VP9 profile-0 decode is also validated.  A 120-frame
+3840x2160@30 test stream completes through the direct request path in 2.738
+seconds with output discarded, or 43.83 fps.  A second run streamed all
+1,492,992,000 decoded NV12 bytes through a FIFO; its SHA-256 is
+`00b7bbb72eeb47e72af2a566710905641f7d3904a0e074ef3295aa7105bdc02c`,
+identical to an explicit libvpx decode of the same IVF.  GStreamer's default
+4K capture pool cannot be used on this 1 GB board because its 128 MiB CMA pool
+runs out while allocating 12,441,600-byte capture buffers.  The validation
+client therefore supports reference-safe capture recycling and needed four
+buffers for this stream.
+
+CedarX also proves that H618 hardware supports VP9 profile 2 at 10-bit: the
+vendor decoder successfully decoded a three-frame 320x240 `yuv420p10le`
+sequence.  The native V4L2 path does not advertise this yet because H618's
+primary 10-bit reconstruction surface is not ordinary NV12/P010.  It stores
+an 8-bit NV21 high plane followed by packed two-bit extension data; exposing
+that through a standard userspace format, or using the secondary output path,
+remains the next VP9 ABI task.
+
 The module is currently validated as a guarded replacement: remove distro
 `sunxi_cedrus`, load its V4L2/VB2 dependencies and the experimental module,
 run the test, then unload it and restore distro `sunxi_cedrus`. The test helper
@@ -105,7 +124,7 @@ own the VE concurrently.
 
 ## Remaining scope
 
-* Finish VP9 profile/10-bit coverage and validate sustained 4K decode.
+* Finish the VP9 profile/10-bit V4L2 output-surface/API path; profile-2 10-bit hardware decode itself is vendor-validated.
 * AVS/AVS2 is intentionally deferred. It requires a new codec engine and a
   suitable userspace API rather than mere format advertisement.
 * Package the native module for persistent boot and validate decode/encode

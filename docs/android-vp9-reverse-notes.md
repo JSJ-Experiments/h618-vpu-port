@@ -93,6 +93,34 @@ the following frame then reads that surface with the wrong stride.  Matching
 the CedarX per-frame geometry makes a 16-frame 640x360 -> 320x180 -> 640x360
 sequence byte-identical to a libvpx native-dimension reference for all frames.
 
+The vendor backend has a real high-bit-depth path rather than dead register
+code.  `Vp9DecodeFrameTag()` parses 8-, 10-, and 12-bit VP9 state and the
+exported `VP9Set10BitReg()` programs decoder register `0x58c` for bit depths
+above eight.  A generated three-frame 320x240 profile-2 10-bit IVF decodes
+successfully through the untouched CedarX stack on H618.
+
+A frame-0 DMA dump makes the native 10-bit reconstruction layout concrete.
+For 320x240, the first 115,200 bytes are byte-exact NV21 containing the upper
+eight bits of every sample.  The packed low-two-bit extension starts at offset
+`0x1c200`: luma uses 240 rows and chroma 120 rows, each with a 96-byte stride
+(`ALIGN(width / 4, 32)`).  Four two-bit samples are packed little-to-big within
+each byte (`p0 | p1<<2 | p2<<4 | p3<<6`); chroma's extension bytes use U,V
+sample order even though the high-eight-bit plane is NV21 V,U.  The meaningful
+surface occupies 149,760 bytes and CedarX page-rounds the allocation to 151,552
+bytes (`0x25000`).  This split reconstruction format is why the native driver
+still rejects profile-2/10-bit instead of incorrectly treating it as NV12.
+The shared 10-bit register definitions also expose a secondary P010 output
+mode, which is a candidate for a standard userspace-facing path while keeping
+the primary split surface for references.
+
+A 120-frame 3840x2160 profile-0 stress stream validates the other end of the
+VP9 envelope.  With four reference-safe capture buffers it decodes in 2.738 s
+(43.83 fps) and the full 1,492,992,000-byte NV12 stream hashes to
+`00b7bbb72eeb47e72af2a566710905641f7d3904a0e074ef3295aa7105bdc02c`,
+exactly matching libvpx.  GStreamer itself fails to allocate its larger 4K
+capture pool on this board's 128 MiB CMA region, so this is a userspace/CMA
+pool-size limitation rather than a VE throughput failure.
+
 `android-bridge/vp9-counts-oracle` calls the vendor library's pure
 `VP9GetCounts()` export against a captured count image.  It is retained only as
 a reverse-engineering cross-check; the native decode path neither loads nor
@@ -100,8 +128,14 @@ ships the Android library.
 
 `tools/vp9-controls-dump` uses GStreamer's stateful VP9 parser to turn an IVF
 stream into the exact standardized frame and compressed-header controls used
-by `tools/vp9-request-sequence`.  This keeps the native validation path
-independent of the proprietary parser.
+by `tools/vp9-request-sequence`.  It also writes a 64-byte `.refs` sidecar with
+the parser's complete eight reference-slot timestamps before each frame.  The
+sidecar is diagnostic metadata, not a V4L2 control: when `VP9_CAPTURE_POOL` is
+smaller than the frame count, the request client uses it to recycle only
+capture buffers that are absent from all eight live VP9 reference slots.  This
+keeps long/4K validation within small CMA pools without weakening reference
+correctness, while keeping the native validation path independent of the
+proprietary parser.
 
 `android-bridge/vdecoder-ivf-smoke` accepts `CEDAR_BRIDGE_DUMP_FRAME=N` to dump
 only one selected zero-based frame.  This keeps targeted vendor snapshots from
