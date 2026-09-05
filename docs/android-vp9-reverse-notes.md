@@ -76,6 +76,23 @@ count is greater than one.  A targeted Android dump for a 640x360 two-row
 frame contained `00000000 00000000 00030000 00050009`, matching the native
 geometry exactly.
 
+Reference scaling was recovered from `vp9_setup_scale_factors_for_frame()` and
+`Vp9RefFramSize()`.  The vendor computes each axis factor as
+`(reference_size << 14) / current_size`; most scale registers place that Q14
+factor in bits 5..20, place `(factor >> 10) - 1` in bits 0..4, and use high
+selector bits where required.  `GOLDEN_SCALE1` is asymmetric: its vertical Q14
+factor is stored directly in bits 16..31.  This distinction matters even for
+same-size references (`0x4000000f`, not `0x4008000f`).
+
+`VP9SetTopReg()` also proved essential to resized references.  It rewrites top
+register `0xc8` with the current frame's aligned luma/chroma strides and `0xc4`
+with current-frame chroma geometry on every decode.  Keeping the maximum V4L2
+CAPTURE stride allows the first resized frame to display correctly but stores
+the reconstruction in a layout inconsistent with its recorded VP9 dimensions;
+the following frame then reads that surface with the wrong stride.  Matching
+the CedarX per-frame geometry makes a 16-frame 640x360 -> 320x180 -> 640x360
+sequence byte-identical to a libvpx native-dimension reference for all frames.
+
 `android-bridge/vp9-counts-oracle` calls the vendor library's pure
 `VP9GetCounts()` export against a captured count image.  It is retained only as
 a reverse-engineering cross-check; the native decode path neither loads nor

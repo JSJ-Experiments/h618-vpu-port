@@ -186,6 +186,42 @@ static u32 cedrus_vp9_segment_features(const struct v4l2_vp9_segmentation *seg)
 	return value;
 }
 
+static bool cedrus_vp9_valid_reference_size(unsigned int ref_width,
+					    unsigned int ref_height,
+					    unsigned int width,
+					    unsigned int height)
+{
+	/* Same bounds as valid_ref_frame_size() in the H618 Android HAL. */
+	return ref_width <= 2 * width && ref_height <= 2 * height &&
+	       width <= 16 * ref_width && height <= 16 * ref_height;
+}
+
+static u32 cedrus_vp9_scale(unsigned int reference, unsigned int current_size,
+			    u32 reference_id)
+{
+	u32 scale = (reference << 14) / current_size;
+	u32 step = scale >> 10;
+
+	/*
+	 * Bits 5..20 contain the Q14 reference/current factor and bits 0..4
+	 * contain its Q4 step minus one.  Bits 28..30 select the reference.
+	 */
+	return (reference_id << 28) | (scale << 5) | ((step - 1) & 0x1f);
+}
+
+static u32 cedrus_vp9_golden_scale1(unsigned int reference,
+				    unsigned int current_size)
+{
+	u32 scale = (reference << 14) / current_size;
+	u32 step = scale >> 10;
+
+	/*
+	 * GOLDEN_SCALE1 is the one asymmetric scale register on H618. CedarX
+	 * packs the vertical Q14 factor into bits 16..31 rather than 5..20.
+	 */
+	return (scale << 16) | ((step - 1) & 0x1f);
+}
+
 static void cedrus_vp9_sram_write(struct cedrus_device *dev, u32 offset,
 				  const u32 *values, unsigned int count)
 {
@@ -561,8 +597,7 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 
 	/*
 	 * Keep unsupported state outside the triggerable path.  This is a real
-	 * native decode path, but reference scaling and 10-bit output are separate
-	 * bring-up steps.
+	 * native decode path, but 10-bit output is a separate bring-up step.
 	 */
 	if (frame->profile != 0 || frame->bit_depth != 8 ||
 	    frame->tile_cols_log2 > 6 || frame->tile_rows_log2 > 2 ||
@@ -599,10 +634,15 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 		ret = cedrus_dec_vp9_reference(ctx, frame->alt_frame_ts, &alt);
 		if (ret)
 			return ret;
-		if (last.private->width != width || last.private->height != height ||
-		    golden.private->width != width ||
-		    golden.private->height != height ||
-		    alt.private->width != width || alt.private->height != height)
+		if (!cedrus_vp9_valid_reference_size(last.private->width,
+						     last.private->height,
+						     width, height) ||
+		    !cedrus_vp9_valid_reference_size(golden.private->width,
+						     golden.private->height,
+						     width, height) ||
+		    !cedrus_vp9_valid_reference_size(alt.private->width,
+						     alt.private->height,
+						     width, height))
 			return -EOPNOTSUPP;
 	}
 	use_previous_mvs = !intra_only && vp9->previous_valid &&
@@ -707,13 +747,19 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 			     (golden.private->height << 16) | golden.private->width);
 		cedrus_write(dev, VE_DEC_VP9_ALTREF_PIC_SIZE,
 			     (alt.private->height << 16) | alt.private->width);
-		/* Same-size reference factors recovered from the H618 HAL. */
-		cedrus_write(dev, VE_DEC_VP9_LAST_SCALE0, 0x0008000f);
-		cedrus_write(dev, VE_DEC_VP9_LAST_SCALE1, 0x1008000f);
-		cedrus_write(dev, VE_DEC_VP9_GOLDEN_SCALE0, 0x0008000f);
-		cedrus_write(dev, VE_DEC_VP9_GOLDEN_SCALE1, 0x4000000f);
-		cedrus_write(dev, VE_DEC_VP9_ALTREF_SCALE0, 0x0008000f);
-		cedrus_write(dev, VE_DEC_VP9_ALTREF_SCALE1, 0x0008000f);
+		cedrus_write(dev, VE_DEC_VP9_LAST_SCALE0,
+			     cedrus_vp9_scale(last.private->width, width, 0));
+		cedrus_write(dev, VE_DEC_VP9_LAST_SCALE1,
+			     cedrus_vp9_scale(last.private->height, height, 1));
+		cedrus_write(dev, VE_DEC_VP9_GOLDEN_SCALE0,
+			     cedrus_vp9_scale(golden.private->width, width, 0));
+		cedrus_write(dev, VE_DEC_VP9_GOLDEN_SCALE1,
+			     cedrus_vp9_golden_scale1(golden.private->height,
+					      height));
+		cedrus_write(dev, VE_DEC_VP9_ALTREF_SCALE0,
+			     cedrus_vp9_scale(alt.private->width, width, 0));
+		cedrus_write(dev, VE_DEC_VP9_ALTREF_SCALE1,
+			     cedrus_vp9_scale(alt.private->height, height, 0));
 	}
 
 	cedrus_write(dev, VE_DEC_VP9_SEGMENT_FEATURE,
@@ -755,14 +801,19 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 		     VE_DEC_VP9_DMA_ADDR_BASE(cedrus_dma_addr(dev, alt.chroma)));
 	cedrus_write(dev, VE_DEC_VP9_STD_BIT_OFFSET, 0);
 
-	/* VP9SetTopReg() programs these three top-level output registers for every
-	 * frame.  They survive the decoder reset and therefore must not be left at
-	 * values from a previous codec or userspace probe. */
+	/*
+	 * VP9SetTopReg() programs these three top-level output registers for every
+	 * frame.  H618 stores each VP9 reconstruction surface at that frame's own
+	 * aligned width, which is also the stride used when the surface is later
+	 * consumed as a differently-sized reference.  Using the negotiated maximum
+	 * CAPTURE stride here decodes the first resized frame correctly but corrupts
+	 * the next frame when it references that reconstruction.
+	 */
 	cedrus_write(dev, VE_PRIMARY_CHROMA_BUF_LEN,
-		     picture->bytesperline * picture->height / 4);
+		     ALIGN(width, 16) * ALIGN(height, 16) / 4);
 	cedrus_write(dev, VE_PRIMARY_FB_LINE_STRIDE,
-		     VE_PRIMARY_FB_LINE_STRIDE_LUMA(picture->bytesperline) |
-		     VE_PRIMARY_FB_LINE_STRIDE_CHROMA(picture->bytesperline / 2));
+		     VE_PRIMARY_FB_LINE_STRIDE_LUMA(ALIGN(width, 16)) |
+		     VE_PRIMARY_FB_LINE_STRIDE_CHROMA(ALIGN(width, 16) / 2));
 	cedrus_write(dev, VE_PRIMARY_OUT_FMT, VE_PRIMARY_OUT_FMT_NV12);
 
 	cedrus_vp9_dequant_write(ctx);

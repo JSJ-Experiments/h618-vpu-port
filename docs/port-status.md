@@ -72,6 +72,21 @@ the V4L2 capture buffer's normal 16-line alignment padding.  The combined 2-D
 test has SHA-256
 `224bb95c40e9c2b0c8e7b32cac8b9d4f7ebe857e1b2ea696ca0ed3db3c7c1694`.
 
+VP9 differently-sized reference frames are now supported by the native H618
+path.  CedarX's scale-factor routine computes Q14 `reference/current` factors;
+the H618 register packing is mostly factor-in-bits-5..20 plus a five-bit Q4
+step, except `GOLDEN_SCALE1`, whose vertical Q14 factor occupies bits 16..31.
+The top-level reconstruction stride and chroma geometry must also be programmed
+from each decoded frame's own aligned dimensions rather than from the maximum
+negotiated CAPTURE format, because that reconstruction is later consumed as a
+reference using its stored frame dimensions.  A 16-frame 640x360 -> 320x180 ->
+640x360 sequence is byte-identical to libvpx for every visible frame.  The same
+module also remains byte-identical on the existing three-frame inter, 60-frame
+segmentation, row-tile and 2-D-tile regressions.  GStreamer 1.24's
+`v4l2slvp9dec` intentionally drops non-keyframe resolution changes, so the
+mixed-size test uses the direct stateless request client rather than that
+userspace element.
+
 The module is currently validated as a guarded replacement: remove distro
 `sunxi_cedrus`, load its V4L2/VB2 dependencies and the experimental module,
 run the test, then unload it and restore distro `sunxi_cedrus`. The test helper
@@ -90,7 +105,7 @@ own the VE concurrently.
 
 ## Remaining scope
 
-* Finish VP9 reference scaling and profile/10-bit coverage.
+* Finish VP9 profile/10-bit coverage and validate sustained 4K decode.
 * AVS/AVS2 is intentionally deferred. It requires a new codec engine and a
   suitable userspace API rather than mere format advertisement.
 * Package the native module for persistent boot and validate decode/encode
