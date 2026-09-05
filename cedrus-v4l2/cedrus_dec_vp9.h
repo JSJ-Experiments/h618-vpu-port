@@ -87,7 +87,12 @@ struct cedrus_dec_vp9_context {
 struct cedrus_dec_vp9_buffer {
 	u32 width;
 	u32 height;
+	u8 bit_depth;
 	bool valid;
+	void *recon;
+	dma_addr_t recon_dma;
+	size_t recon_size;
+	size_t recon_chroma_offset;
 };
 
 struct cedrus_dec_vp9_job {
