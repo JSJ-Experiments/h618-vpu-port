@@ -55,6 +55,15 @@ layout, before the kernel VP9 helpers refresh the selected frame context.  A
 CRC on every frame as the Android vendor decoder and is byte-identical to its
 FFmpeg software reference over all 4,147,200 output bytes.
 
+VP9 segmentation is implemented, including ALT_Q/ALT_L, reference-frame and
+skip features, tree/prediction probabilities, temporal updates, and segment-map
+retention across frames.  A 60-frame 320x240 CBR stream using variance AQ and
+four map updates is byte-identical through GStreamer's `v4l2slvp9dec` to its
+FFmpeg software reference (SHA-256
+`050649b904c646a116373429d2f5db5c37cee7deb596fb7d45fc4c678427dc38`).
+The same reverse pass corrected the inter-frame header fields for high-precision
+motion vectors and interpolation-filter selection.
+
 The module is currently validated as a guarded replacement: remove distro
 `sunxi_cedrus`, load its V4L2/VB2 dependencies and the experimental module,
 run the test, then unload it and restore distro `sunxi_cedrus`. The test helper
@@ -73,8 +82,7 @@ own the VE concurrently.
 
 ## Remaining scope
 
-* Finish VP9 reference scaling, segmentation, tile rows, and profile/10-bit
-  coverage.
+* Finish VP9 reference scaling, tile rows, and profile/10-bit coverage.
 * AVS/AVS2 is intentionally deferred. It requires a new codec engine and a
   suitable userspace API rather than mere format advertisement.
 * Package the native module for persistent boot and validate decode/encode

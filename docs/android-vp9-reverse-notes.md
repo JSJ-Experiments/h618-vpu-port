@@ -49,6 +49,24 @@ normalizes that layout and uses the common V4L2 VP9 probability helpers.  On a
 12-frame 640x360 adaptive stream, its packed probability CRCs match the vendor
 decoder frame-for-frame and its decoded NV12 is byte-identical to FFmpeg.
 
+Segmentation uses header-sync bits 17--19 for enabled, update-map, and temporal
+update.  The seven tree probabilities are stored at probability-image offset
+`0xaf0`, followed by padding and the three prediction probabilities at
+`0xaf8`.  Register `0x55c` holds reference-frame enable/value and skip-enable
+features; ALT_Q and ALT_L remain in the dequant and loop-filter SRAM tables.
+The segment map is not addressed by the vendor-named register `0xb0`: the
+engine reads and writes an implicit window at probability allocation offset
+`0x8000`, with 32 bytes per superblock.  The native driver mirrors CedarX by
+retaining that map across frames and replacing it only after a successful
+update-map frame.  Its probability and segment-map CRCs match targeted Android
+snapshots, and a 60-frame variance-AQ stream is byte-identical to software.
+
+Disassembly and an Android inter-frame snapshot also established that
+header-sync bit 8 is `allow_high_precision_mv` and bits 9--11 contain the VP9
+interpolation-filter enum.  Treating bit 11 as the high-precision flag happened
+to work for switchable-filter streams until a frame disabled high-precision
+motion vectors.
+
 `android-bridge/vp9-counts-oracle` calls the vendor library's pure
 `VP9GetCounts()` export against a captured count image.  It is retained only as
 a reverse-engineering cross-check; the native decode path neither loads nor
@@ -58,6 +76,10 @@ ships the Android library.
 stream into the exact standardized frame and compressed-header controls used
 by `tools/vp9-request-sequence`.  This keeps the native validation path
 independent of the proprietary parser.
+
+`android-bridge/vdecoder-ivf-smoke` accepts `CEDAR_BRIDGE_DUMP_FRAME=N` to dump
+only one selected zero-based frame.  This keeps targeted vendor snapshots from
+filling the board's tmpfs during long sequences.
 
 AVS2 is deferred for the current implementation. It also uses the CedarX VE
 callback table, but Linux 6.1 has no standardized

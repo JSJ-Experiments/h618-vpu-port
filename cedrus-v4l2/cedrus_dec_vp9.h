@@ -11,6 +11,7 @@
 #define CEDRUS_DEC_VP9_PROBS_OFFSET		0x4000
 #define CEDRUS_DEC_VP9_PROBS_SIZE		0xafc
 #define CEDRUS_DEC_VP9_COUNTS_OFFSET		0x4b00
+#define CEDRUS_DEC_VP9_SEGMENT_MAP_OFFSET	0x8000
 
 struct cedrus_vp9_frame_counts {
 	/* Exact 0x3398-byte hardware order recovered from vp9_update_counts(). */
@@ -56,6 +57,7 @@ struct cedrus_dec_vp9_context {
 	void *segment_map[2];
 	dma_addr_t segment_map_dma[2];
 	size_t segment_map_size;
+	u8 active_segment_map;
 	void *mv_col;
 	dma_addr_t mv_col_dma;
 	size_t mv_col_size;

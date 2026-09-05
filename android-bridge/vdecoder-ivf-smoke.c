@@ -198,8 +198,12 @@ int main(int argc, char **argv)
                0, 0, data.nPts);
    picture = request_picture(decoder, 0);
    if (picture) {
+    const char *dump_frame = getenv("CEDAR_BRIDGE_DUMP_FRAME");
+
     snprintf(tag, sizeof(tag), "frame-%03u", frame_index);
-    dump_buffers(tag);
+    if (!dump_frame || !*dump_frame ||
+        frame_index == strtoul(dump_frame, NULL, 0))
+     dump_buffers(tag);
     return_picture(decoder, picture);
     printf("CedarX VP9 frame %u/%u OK (size=%u result=%d)\n",
            frame_index + 1, frame_count, size, rc);

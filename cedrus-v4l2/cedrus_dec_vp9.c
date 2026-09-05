@@ -26,6 +26,9 @@
 #include "cedrus_vp9_helper.h"
 
 #define CEDRUS_VP9_HDR_KEY_BASE		0x84001000
+#define CEDRUS_VP9_HDR_SEGMENT_ENABLED	BIT(17)
+#define CEDRUS_VP9_HDR_SEGMENT_UPDATE_MAP BIT(18)
+#define CEDRUS_VP9_HDR_SEGMENT_TEMPORAL	BIT(19)
 #define CEDRUS_VP9_SRAM_DEQUANT		0
 #define CEDRUS_VP9_SRAM_LOOP_FILTER	0x100
 
@@ -52,7 +55,8 @@ static void cedrus_vp9_pack_word(u8 **dst, const u8 *src, size_t size)
  * layout recovered from Vp9GetEntrypointOffset() in the Android HAL.
  */
 static void cedrus_vp9_pack_probs(void *buffer,
-				  const struct v4l2_vp9_frame_context *p)
+				  const struct v4l2_vp9_frame_context *p,
+				  const struct v4l2_vp9_segmentation *seg)
 {
 	u8 *base = buffer;
 	u8 *dst = base;
@@ -117,6 +121,14 @@ static void cedrus_vp9_pack_probs(void *buffer,
 		memcpy(mv + 0x28, p->mv.fr[i], 3);
 	}
 
+	/* The segment trees occupy padding at the tail of the MV image. */
+	if (seg->flags & V4L2_VP9_SEGMENTATION_FLAG_ENABLED) {
+		memcpy(base + 0xaf0, seg->tree_probs,
+		       sizeof(seg->tree_probs));
+		memcpy(base + 0xaf8, seg->pred_probs,
+		       sizeof(seg->pred_probs));
+	}
+
 	WARN_ON(dst != base + 0xa94);
 }
 
@@ -140,6 +152,36 @@ static int cedrus_vp9_segment_value(const struct v4l2_vp9_segmentation *seg,
 	if (!(seg->flags &
 	      V4L2_VP9_SEGMENTATION_FLAG_ABS_OR_DELTA_UPDATE))
 		value += base;
+
+	return value;
+}
+
+static u32 cedrus_vp9_segment_features(const struct v4l2_vp9_segmentation *seg)
+{
+	u32 value = 0;
+	unsigned int segment;
+
+	if (!(seg->flags & V4L2_VP9_SEGMENTATION_FLAG_ENABLED))
+		return 0;
+
+	/*
+	 * ALT_Q and ALT_L live in the two SRAM tables.  The H618 packs the
+	 * remaining per-segment features into one register: reference enable and
+	 * value in bits 0..7 and 16..31, and skip enable in bits 8..15.
+	 */
+	for (segment = 0; segment < 8; segment++) {
+		if (seg->feature_enabled[segment] &
+		    V4L2_VP9_SEGMENT_FEATURE_ENABLED(
+			    V4L2_VP9_SEG_LVL_REF_FRAME)) {
+			value |= BIT(segment);
+			value |= (seg->feature_data[segment]
+					 [V4L2_VP9_SEG_LVL_REF_FRAME] & 3)
+				 << (16 + 2 * segment);
+		}
+		if (seg->feature_enabled[segment] &
+		    V4L2_VP9_SEGMENT_FEATURE_ENABLED(V4L2_VP9_SEG_LVL_SKIP))
+			value |= BIT(8 + segment);
+	}
 
 	return value;
 }
@@ -411,6 +453,7 @@ static int cedrus_dec_vp9_setup(struct cedrus_context *ctx)
 	memset(vp9->entry_info, 0, CEDRUS_DEC_VP9_ENTRY_INFO_SIZE);
 	for (i = 0; i < ARRAY_SIZE(vp9->segment_map); i++)
 		memset(vp9->segment_map[i], 0, vp9->segment_map_size);
+	vp9->active_segment_map = 0;
 	for (i = 0; i < ARRAY_SIZE(vp9->frame_context); i++)
 		vp9->frame_context[i] = cedrus_vp9_default_probs;
 	cedrus_dec_vp9_init_counts(vp9);
@@ -516,11 +559,10 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 
 	/*
 	 * Keep unsupported state outside the triggerable path.  This is a real
-	 * native decode path, but references/probability adaptation and 10-bit
-	 * output are separate bring-up steps.
+	 * native decode path, but reference scaling and 10-bit output are separate
+	 * bring-up steps.
 	 */
 	if (frame->profile != 0 || frame->bit_depth != 8 ||
-	    (frame->seg.flags & V4L2_VP9_SEGMENTATION_FLAG_ENABLED) ||
 	    frame->tile_cols_log2 > 6 || frame->tile_rows_log2 ||
 	    picture->pixelformat != V4L2_PIX_FMT_NV12 ||
 	    width > coded->width || height > coded->height ||
@@ -568,6 +610,18 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 
 	/* Reset, forward-update and pack the exact context supplied by userspace. */
 	memset(vp9->prob_count, 0, CEDRUS_DEC_VP9_PROB_COUNT_SIZE);
+	/*
+	 * The segment-map input is an implicit window at +0x8000 in the shared
+	 * probability/count allocation, not register B0 despite the vendor symbol
+	 * assigned to that offset.  CedarX deliberately retains this window across
+	 * frames.  Restore it after clearing the count image.
+	 */
+	if ((frame->seg.flags & V4L2_VP9_SEGMENTATION_FLAG_ENABLED) &&
+	    !intra_only)
+		memcpy((u8 *)vp9->prob_count +
+		       CEDRUS_DEC_VP9_SEGMENT_MAP_OFFSET,
+		       vp9->segment_map[vp9->active_segment_map],
+		       vp9->segment_map_size);
 	vp9->frame_context_idx =
 		cedrus_vp9_reset_frame_ctx(frame, vp9->frame_context);
 	vp9->probability_tables =
@@ -576,7 +630,7 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 				   job->compressed_hdr, frame);
 	cedrus_vp9_pack_probs((u8 *)vp9->prob_count +
 			      CEDRUS_DEC_VP9_PROBS_OFFSET,
-			      &vp9->probability_tables);
+			      &vp9->probability_tables, &frame->seg);
 	if (debug_vp9_probs)
 		dev_info(dev->dev, "VP9 probability input CRC32 %08x\n",
 			 crc32_le(~0, vp9->prob_count + CEDRUS_DEC_VP9_PROBS_OFFSET,
@@ -599,19 +653,31 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 		entry[3] = ((sb_rows - 1) << 16) | end;
 	}
 	memset(vp9->entry_info, 0, CEDRUS_DEC_VP9_ENTRY_INFO_SIZE);
-	memset(vp9->segment_map[0], 0, vp9->segment_map_size);
-	memset(vp9->segment_map[1], 0, vp9->segment_map_size);
+	if (intra_only ||
+	    (frame->flags & V4L2_VP9_FRAME_FLAG_ERROR_RESILIENT)) {
+		memset(vp9->segment_map[0], 0, vp9->segment_map_size);
+		memset(vp9->segment_map[1], 0, vp9->segment_map_size);
+		vp9->active_segment_map = 0;
+	}
 
 	cedrus_write(dev, VE_DEC_VP9_STATUS, VE_DEC_VP9_STATUS_MASK);
 
 	value = (frame->flags & V4L2_VP9_FRAME_FLAG_KEY_FRAME ?
 		 CEDRUS_VP9_HDR_KEY_BASE :
-		 (0x84001102 |
+		 (0x84001002 |
 		  ((frame->flags & V4L2_VP9_FRAME_FLAG_ALLOW_HIGH_PREC_MV) ?
-		   BIT(11) : 0) |
+		   BIT(8) : 0) |
+		  (frame->interpolation_filter << 9) |
 		  (use_previous_mvs ? BIT(25) : 0))) |
 		(!(frame->flags & V4L2_VP9_FRAME_FLAG_PARALLEL_DEC_MODE) ?
 		 BIT(27) : 0) |
+		((frame->seg.flags & V4L2_VP9_SEGMENTATION_FLAG_ENABLED) ?
+		 CEDRUS_VP9_HDR_SEGMENT_ENABLED : 0) |
+		((frame->seg.flags & V4L2_VP9_SEGMENTATION_FLAG_UPDATE_MAP) ?
+		 CEDRUS_VP9_HDR_SEGMENT_UPDATE_MAP : 0) |
+		((frame->seg.flags &
+		  V4L2_VP9_SEGMENTATION_FLAG_TEMPORAL_UPDATE) ?
+		 CEDRUS_VP9_HDR_SEGMENT_TEMPORAL : 0) |
 		(tile_cols > 1 ? BIT(0) : 0) |
 		(job->compressed_hdr->tx_mode << 20);
 	cedrus_write(dev, VE_DEC_VP9_HDR_SYNC, value);
@@ -642,7 +708,8 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 		cedrus_write(dev, VE_DEC_VP9_ALTREF_SCALE1, 0x0008000f);
 	}
 
-	cedrus_write(dev, VE_DEC_VP9_SEGMENT_FEATURE, 0);
+	cedrus_write(dev, VE_DEC_VP9_SEGMENT_FEATURE,
+		     cedrus_vp9_segment_features(&frame->seg));
 	cedrus_write(dev, VE_DEC_VP9_NEIGHBOR_ADDR,
 		     VE_DEC_VP9_DMA_ADDR_BASE(
 			     cedrus_dma_addr(dev, vp9->entry_info_dma)));
@@ -678,7 +745,6 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 		     VE_DEC_VP9_DMA_ADDR_BASE(cedrus_dma_addr(dev, alt.luma)));
 	cedrus_write(dev, VE_DEC_VP9_ALTREF_CHROMA_ADDR,
 		     VE_DEC_VP9_DMA_ADDR_BASE(cedrus_dma_addr(dev, alt.chroma)));
-	cedrus_write(dev, VE_DEC_VP9_SEGMENT_ID_ADDR, 0);
 	cedrus_write(dev, VE_DEC_VP9_STD_BIT_OFFSET, 0);
 
 	/* VP9SetTopReg() programs these three top-level output registers for every
@@ -713,6 +779,18 @@ static int cedrus_dec_vp9_job_configure(struct cedrus_context *ctx)
 		VE_DEC_VP9_BITS_ADDR_LAST_FRAME |
 		VE_DEC_VP9_BITS_ADDR_VALID_DATA;
 	cedrus_write(dev, VE_DEC_VP9_BITS_ADDR, value);
+
+	if ((frame->seg.flags & V4L2_VP9_SEGMENTATION_FLAG_ENABLED) &&
+	    !intra_only) {
+		if (debug_vp9_probs)
+			dev_info(dev->dev,
+				 "VP9 segment input map=%u CRC32 %08x\n",
+				 vp9->active_segment_map,
+				 crc32_le(~0,
+					  vp9->segment_map[vp9->active_segment_map],
+					  vp9->segment_map_size) ^ ~0);
+	}
+	cedrus_write(dev, VE_DEC_VP9_SEGMENT_ID_ADDR, 0);
 
 	cedrus_write(dev, VE_DEC_VP9_FUNC_CTRL,
 		     VE_DEC_VP9_FUNC_CTRL_IRQ_MASK);
@@ -762,6 +840,33 @@ static void cedrus_dec_vp9_job_finish(struct cedrus_context *ctx, int state)
 
 	if (state != VB2_BUF_STATE_DONE)
 		return;
+
+	if ((frame->seg.flags & V4L2_VP9_SEGMENTATION_FLAG_ENABLED) &&
+	    (frame->seg.flags & V4L2_VP9_SEGMENTATION_FLAG_UPDATE_MAP)) {
+		u8 next = vp9->active_segment_map ^ 1;
+
+		/*
+		 * The H618 writes the newly decoded 32-bytes-per-superblock map
+		 * immediately after its count image.  CedarX copies that implicit
+		 * output into a persistent buffer for the next frame.
+		 */
+		dma_rmb();
+		if (debug_vp9_probs)
+			dev_info(ctx->proc->dev->dev,
+				 "VP9 segment output map CRC32 %08x first=%08x %08x\n",
+				 crc32_le(~0, (u8 *)vp9->prob_count +
+					  CEDRUS_DEC_VP9_SEGMENT_MAP_OFFSET,
+					  vp9->segment_map_size) ^ ~0,
+				 ((u32 *)((u8 *)vp9->prob_count +
+					   CEDRUS_DEC_VP9_SEGMENT_MAP_OFFSET))[0],
+				 ((u32 *)((u8 *)vp9->prob_count +
+					   CEDRUS_DEC_VP9_SEGMENT_MAP_OFFSET))[1]);
+		memcpy(vp9->segment_map[next],
+		       (u8 *)vp9->prob_count +
+			       CEDRUS_DEC_VP9_SEGMENT_MAP_OFFSET,
+		       vp9->segment_map_size);
+		vp9->active_segment_map = next;
+	}
 	frame_is_intra = frame->flags & (V4L2_VP9_FRAME_FLAG_KEY_FRAME |
 					       V4L2_VP9_FRAME_FLAG_INTRA_ONLY);
 	use_128 = !vp9->previous_valid || vp9->previous_key_frame;
